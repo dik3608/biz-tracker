@@ -41,7 +41,7 @@ export async function buildFinancialContext(): Promise<string> {
     sumByType(new Date("2000-01-01"), new Date("2099-12-31"), "EXPENSE"),
     prisma.transaction.findMany({
       where: { date: { gte: new Date(now.getFullYear(), now.getMonth() - 11, 1) } },
-      include: { category: true },
+      include: { category: true, subcategory: true },
       orderBy: { date: "desc" },
     }),
   ]);
@@ -65,12 +65,23 @@ export async function buildFinancialContext(): Promise<string> {
     const d = t.date.toISOString().split("T")[0];
     const sign = t.type === "INCOME" ? "+" : "-";
     const cur = t.currency !== "USD" ? ` (${Number(t.originalAmount).toFixed(2)} ${t.currency})` : "";
-    return `${d} | ${t.type} | ${sign}$${Number(t.amount).toFixed(2)}${cur} | ${t.category.name} | ${t.description}`;
+    const sub = t.subcategory ? ` > ${t.subcategory.name}` : "";
+    return `${d} | ${t.type} | ${sign}$${Number(t.amount).toFixed(2)}${cur} | ${t.category.name}${sub} | ${t.description}`;
   });
 
-  const catLines = categories.map(
-    (c) => `- ${c.name} (${c.type}, slug: ${c.slug})`,
-  );
+  const allSubs = await prisma.subcategory.findMany({ include: { category: true } });
+  const subsByCategory = new Map<string, string[]>();
+  allSubs.forEach((s) => {
+    const arr = subsByCategory.get(s.categoryId) || [];
+    arr.push(s.name);
+    subsByCategory.set(s.categoryId, arr);
+  });
+
+  const catLines = categories.map((c) => {
+    const subs = subsByCategory.get(c.id);
+    const subStr = subs?.length ? ` [подкатегории: ${subs.join(", ")}]` : "";
+    return `- ${c.name} (${c.type}, slug: ${c.slug})${subStr}`;
+  });
 
   return `=== ФИНАНСОВЫЕ ДАННЫЕ BIZTRACKER ===
 

@@ -8,13 +8,16 @@ export async function PATCH(
 ) {
   const { id } = await params;
   const body = await req.json();
-  const { type, amount, description, categoryId, date, tags, currency, exchangeRate } = body;
+  const { type, amount, description, categoryId, subcategoryId, date, tags, currency, exchangeRate } = body;
 
   const data: Prisma.TransactionUpdateInput = {};
 
   if (type !== undefined) data.type = type;
   if (description !== undefined) data.description = description;
   if (categoryId !== undefined) data.category = { connect: { id: categoryId } };
+  if (subcategoryId !== undefined) {
+    data.subcategory = subcategoryId ? { connect: { id: subcategoryId } } : { disconnect: true };
+  }
   if (date !== undefined) data.date = new Date(date);
   if (tags !== undefined) data.tags = tags;
   if (currency !== undefined) data.currency = currency;
@@ -31,7 +34,7 @@ export async function PATCH(
     const transaction = await prisma.transaction.update({
       where: { id },
       data,
-      include: { category: true },
+      include: { category: true, subcategory: true },
     });
 
     return NextResponse.json({

@@ -21,29 +21,47 @@ model Category {
   sortOrder Int      @default(0)
   createdAt DateTime @default(now())
 
-  transactions Transaction[]
+  transactions   Transaction[]
+  subcategories  Subcategory[]
 
   @@unique([type, slug])
 }
 
+model Subcategory {
+  id         String   @id @default(cuid())
+  name       String
+  categoryId String
+  category   Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  sortOrder  Int      @default(0)
+  createdAt  DateTime @default(now())
+
+  transactions Transaction[]
+
+  @@unique([categoryId, name])
+  @@index([categoryId])
+}
+
 model Transaction {
-  id            String   @id @default(cuid())
-  type          TxType
-  amount        Decimal  @db.Decimal(12, 2) // amount in base currency (USD)
-  originalAmount Decimal @db.Decimal(12, 2) @default(0) // amount as entered
-  currency      String   @default("USD") // USD or EUR
-  exchangeRate  Decimal  @db.Decimal(10, 6) @default(1) // rate used for conversion
-  description   String
-  date          DateTime @db.Date
-  tags          String   @default("")
-  categoryId    String
-  category      Category @relation(fields: [categoryId], references: [id])
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id             String       @id @default(cuid())
+  type           TxType
+  amount         Decimal      @db.Decimal(12, 2)
+  originalAmount Decimal      @db.Decimal(12, 2) @default(0)
+  currency       String       @default("USD")
+  exchangeRate   Decimal      @db.Decimal(10, 6) @default(1)
+  description    String
+  date           DateTime     @db.Date
+  tags           String       @default("")
+  categoryId     String
+  category       Category     @relation(fields: [categoryId], references: [id])
+  subcategoryId  String?
+  subcategory    Subcategory? @relation(fields: [subcategoryId], references: [id])
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
 
   @@index([date])
   @@index([type])
   @@index([categoryId])
+  @@index([subcategoryId])
 }
 
 model Session {

@@ -33,7 +33,7 @@ export async function GET(req: NextRequest) {
   const [transactions, total] = await Promise.all([
     prisma.transaction.findMany({
       where,
-      include: { category: true },
+      include: { category: true, subcategory: true },
       orderBy: [{ date: "desc" }, { createdAt: "desc" }],
       skip: (page - 1) * limit,
       take: limit,
@@ -56,7 +56,7 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   const body = await req.json();
-  const { type, amount, description, categoryId, date, tags, currency, exchangeRate } = body;
+  const { type, amount, description, categoryId, subcategoryId, date, tags, currency, exchangeRate } = body;
 
   if (!type || !amount || !description || !categoryId || !date) {
     return NextResponse.json(
@@ -92,10 +92,11 @@ export async function POST(req: NextRequest) {
       exchangeRate: new Prisma.Decimal(rate),
       description,
       categoryId,
+      subcategoryId: subcategoryId || null,
       date: new Date(date),
       tags: tags ?? "",
     },
-    include: { category: true },
+    include: { category: true, subcategory: true },
   });
 
   return NextResponse.json(

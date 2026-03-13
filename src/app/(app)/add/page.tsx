@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, Repeat, Plus, Loader2 } from "lucide-react";
+import { Check, Repeat, Plus, Loader2, Sparkles } from "lucide-react";
 
 type Category = {
   id: string;
@@ -9,6 +9,12 @@ type Category = {
   type: "INCOME" | "EXPENSE";
   color: string;
   slug: string;
+};
+
+type Subcategory = {
+  id: string;
+  name: string;
+  categoryId: string;
 };
 
 type Transaction = {
@@ -21,9 +27,19 @@ type Transaction = {
   date: string;
   tags: string;
   category: { id: string; name: string; color: string };
+  subcategory?: { id: string; name: string } | null;
 };
 
 type Currency = "USD" | "EUR";
+
+interface AISuggestion {
+  categoryId: string;
+  categoryName: string;
+  subcategoryId: string | null;
+  subcategoryName: string;
+  newSubcategory: boolean;
+  type: "INCOME" | "EXPENSE";
+}
 
 const fmtUSD = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
 const fmtEUR = new Intl.NumberFormat("de-DE", { style: "currency", currency: "EUR" });
@@ -39,6 +55,7 @@ const EMPTY_FORM = {
   type: "EXPENSE" as "INCOME" | "EXPENSE",
   amount: "",
   categoryId: "",
+  subcategoryId: "",
   description: "",
   date: today(),
   tags: "",
@@ -47,12 +64,16 @@ const EMPTY_FORM = {
 
 export default function AddPage() {
   const [categories, setCategories] = useState<Category[]>([]);
+  const [subcategories, setSubcategories] = useState<Subcategory[]>([]);
   const [eurRate, setEurRate] = useState<number>(1.08);
 
   useEffect(() => {
     fetch("/api/categories")
       .then((r) => r.json())
       .then((d) => setCategories(d.categories ?? []));
+    fetch("/api/subcategories")
+      .then((r) => r.json())
+      .then((d) => setSubcategories(d.subcategories ?? []));
     fetch("/api/exchange-rate")
       .then((r) => r.json())
       .then((d) => setEurRate(d.rate ?? 1.08))
@@ -66,6 +87,11 @@ export default function AddPage() {
   const filteredCats = useMemo(
     () => categories.filter((c) => c.type === form.type),
     [categories, form.type],
+  );
+
+  const filteredSubs = useMemo(
+    () => subcategories.filter((s) => s.categoryId === form.categoryId),
+    [subcategories, form.categoryId],
   );
 
   const convertedAmount = useMemo(() => {
@@ -95,6 +121,77 @@ export default function AddPage() {
     quickRef.current?.blur();
   };
 
+  /* --- AI Suggest --- */
+  const [aiSuggestion, setAiSuggestion] = useState<AISuggestion | null>(null);
+  const [aiLoading, setAiLoading] = useState(false);
+  const suggestTimer = useRef<ReturnType<typeof setTimeout>>(null);
+
+  const requestSuggestion = useCallback(
+    async (desc: string) => {
+      const apiKey = localStorage.getItem("openai_api_key");
+      if (!apiKey || !desc.trim() || desc.length < 3) {
+        setAiSuggestion(null);
+        return;
+      }
+      setAiLoading(true);
+      try {
+        const res = await fetch("/api/ai/suggest", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-OpenAI-Key": apiKey,
+          },
+          body: JSON.stringify({ description: desc, type: form.type }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setAiSuggestion(data);
+        }
+      } catch {}
+      setAiLoading(false);
+    },
+    [form.type],
+  );
+
+  function onDescriptionChange(val: string) {
+    patch({ description: val });
+    if (suggestTimer.current) clearTimeout(suggestTimer.current);
+    suggestTimer.current = setTimeout(() => requestSuggestion(val), 800);
+  }
+
+  async function applySuggestion() {
+    if (!aiSuggestion) return;
+
+    const updates: Partial<typeof form> = {};
+
+    if (aiSuggestion.type) updates.type = aiSuggestion.type;
+    if (aiSuggestion.categoryId) updates.categoryId = aiSuggestion.categoryId;
+
+    if (aiSuggestion.newSubcategory && aiSuggestion.subcategoryName && aiSuggestion.categoryId) {
+      try {
+        const res = await fetch("/api/subcategories", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: aiSuggestion.subcategoryName,
+            categoryId: aiSuggestion.categoryId,
+          }),
+        });
+        if (res.ok) {
+          const newSub = await res.json();
+          setSubcategories((prev) => [...prev, newSub]);
+          updates.subcategoryId = newSub.id;
+        }
+      } catch {}
+    } else if (aiSuggestion.subcategoryId) {
+      updates.subcategoryId = aiSuggestion.subcategoryId;
+    }
+
+    patch(updates);
+    setAiSuggestion(null);
+  }
+
+  /* --- Save --- */
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState(false);
 
@@ -110,6 +207,7 @@ export default function AddPage() {
           amount: Number(form.amount),
           description: form.description,
           categoryId: form.categoryId,
+          subcategoryId: form.subcategoryId || null,
           date: form.date,
           tags: form.tags,
           currency: form.currency,
@@ -120,6 +218,7 @@ export default function AddPage() {
       const data: Transaction = await res.json();
       setLastTx(data);
       setForm({ ...EMPTY_FORM, date: today() });
+      setAiSuggestion(null);
       setToast(true);
       setTimeout(() => setToast(false), 2000);
     } finally {
@@ -141,6 +240,7 @@ export default function AddPage() {
       type: lastTx.type,
       amount: String(lastTx.originalAmount || lastTx.amount),
       categoryId: lastTx.category.id,
+      subcategoryId: lastTx.subcategory?.id || "",
       description: lastTx.description,
       date: today(),
       tags: lastTx.tags ?? "",
@@ -174,7 +274,7 @@ export default function AddPage() {
           {(["INCOME", "EXPENSE"] as const).map((t) => (
             <button
               key={t}
-              onClick={() => patch({ type: t, categoryId: "" })}
+              onClick={() => patch({ type: t, categoryId: "", subcategoryId: "" })}
               className={`flex-1 rounded-xl py-3 text-base font-semibold transition ${
                 form.type === t
                   ? t === "INCOME"
@@ -236,10 +336,58 @@ export default function AddPage() {
           )}
         </div>
 
+        {/* description with AI suggest */}
+        <div>
+          <div className="relative">
+            <input
+              placeholder="Описание (напр. Bing Ads пополнение)"
+              value={form.description}
+              onChange={(e) => onDescriptionChange(e.target.value)}
+            />
+            {aiLoading && (
+              <Loader2 size={16} className="absolute right-3 top-1/2 -translate-y-1/2 animate-spin text-[var(--accent-blue)]" />
+            )}
+          </div>
+
+          {/* AI suggestion banner */}
+          {aiSuggestion && !aiLoading && (
+            <div className="mt-2 rounded-xl border border-[var(--accent-blue)]/20 bg-[var(--accent-blue)]/5 p-3">
+              <div className="flex items-start gap-2">
+                <Sparkles size={16} className="mt-0.5 shrink-0 text-[var(--accent-blue)]" />
+                <div className="flex-1 text-xs">
+                  <p className="font-medium text-[var(--accent-blue)]">AI рекомендует:</p>
+                  <p className="mt-1">
+                    <span className="font-medium">{aiSuggestion.type === "INCOME" ? "Доход" : "Расход"}</span>
+                    {" → "}
+                    <span className="font-medium">{aiSuggestion.categoryName}</span>
+                    {aiSuggestion.subcategoryName && (
+                      <>
+                        {" → "}
+                        <span className="font-medium">
+                          {aiSuggestion.subcategoryName}
+                          {aiSuggestion.newSubcategory && (
+                            <span className="ml-1 rounded bg-[var(--accent-blue)]/20 px-1.5 py-0.5 text-[10px]">новая</span>
+                          )}
+                        </span>
+                      </>
+                    )}
+                  </p>
+                </div>
+                <button
+                  onClick={applySuggestion}
+                  className="shrink-0 rounded-lg bg-[var(--accent-blue)] px-3 py-1.5 text-xs font-semibold text-white transition hover:brightness-110"
+                >
+                  Подставить
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+
         {/* category */}
         <select
           value={form.categoryId}
-          onChange={(e) => patch({ categoryId: e.target.value })}
+          onChange={(e) => patch({ categoryId: e.target.value, subcategoryId: "" })}
         >
           <option value="">Категория</option>
           {filteredCats.map((c) => (
@@ -247,12 +395,18 @@ export default function AddPage() {
           ))}
         </select>
 
-        {/* description */}
-        <input
-          placeholder="Описание"
-          value={form.description}
-          onChange={(e) => patch({ description: e.target.value })}
-        />
+        {/* subcategory */}
+        {form.categoryId && (
+          <select
+            value={form.subcategoryId}
+            onChange={(e) => patch({ subcategoryId: e.target.value })}
+          >
+            <option value="">Подкатегория (необязательно)</option>
+            {filteredSubs.map((s) => (
+              <option key={s.id} value={s.id}>{s.name}</option>
+            ))}
+          </select>
+        )}
 
         {/* date */}
         <input
@@ -297,6 +451,11 @@ export default function AddPage() {
               {lastTx.currency === "EUR" && (
                 <span className="text-[var(--text-muted)]">
                   {" "}({fmtUSD.format(lastTx.amount)})
+                </span>
+              )}
+              {lastTx.subcategory && (
+                <span className="ml-1 text-xs text-[var(--text-muted)]">
+                  [{lastTx.subcategory.name}]
                 </span>
               )}
             </p>

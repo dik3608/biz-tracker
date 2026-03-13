@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
+  ChevronDown,
   Pencil,
   Trash2,
   Plus,
@@ -177,6 +178,67 @@ export default function SettingsPage() {
     URL.revokeObjectURL(url);
   }
 
+  /* ---------- Subcategories ---------- */
+
+  interface Subcategory {
+    id: string;
+    name: string;
+    categoryId: string;
+  }
+
+  const [subs, setSubs] = useState<Subcategory[]>([]);
+  const [expandedCat, setExpandedCat] = useState<string | null>(null);
+  const [newSubName, setNewSubName] = useState("");
+  const [editSubId, setEditSubId] = useState<string | null>(null);
+  const [editSubName, setEditSubName] = useState("");
+
+  useEffect(() => {
+    fetch("/api/subcategories")
+      .then((r) => r.json())
+      .then((d) => setSubs(d.subcategories ?? []))
+      .catch(() => {});
+  }, []);
+
+  async function addSub(categoryId: string) {
+    if (!newSubName.trim()) return;
+    try {
+      const res = await fetch("/api/subcategories", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: newSubName.trim(), categoryId }),
+      });
+      if (res.ok) {
+        const created = await res.json();
+        setSubs((prev) => [...prev, created]);
+        setNewSubName("");
+      } else {
+        const err = await res.json();
+        alert(err.error ?? "Ошибка");
+      }
+    } catch { alert("Ошибка сети"); }
+  }
+
+  async function saveSub(id: string) {
+    if (!editSubName.trim()) return;
+    try {
+      await fetch(`/api/subcategories/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: editSubName.trim() }),
+      });
+      setSubs((prev) => prev.map((s) => (s.id === id ? { ...s, name: editSubName.trim() } : s)));
+    } catch {}
+    setEditSubId(null);
+  }
+
+  async function deleteSub(id: string) {
+    if (!confirm("Удалить подкатегорию?")) return;
+    try {
+      await fetch(`/api/subcategories/${id}`, { method: "DELETE" });
+      setSubs((prev) => prev.filter((s) => s.id !== id));
+    } catch {}
+  }
+
   /* ---------- OpenAI API Key ---------- */
 
   const [apiKey, setApiKey] = useState("");
@@ -253,6 +315,75 @@ export default function SettingsPage() {
             onNewColorChange={setNewExpenseColor}
             onAdd={() => addCategory("EXPENSE")}
           />
+        </div>
+      </div>
+
+      {/* ===== Subcategories ===== */}
+      <div className="glass-card p-5">
+        <h2 className="mb-4 text-base font-semibold">Подкатегории</h2>
+        <p className="mb-4 text-xs" style={{ color: "var(--text-muted)" }}>
+          Нажмите на категорию, чтобы добавить или управлять подкатегориями.
+        </p>
+        <div className="space-y-1">
+          {categories.map((cat) => {
+            const catSubs = subs.filter((s) => s.categoryId === cat.id);
+            const isOpen = expandedCat === cat.id;
+            return (
+              <div key={cat.id}>
+                <button
+                  onClick={() => { setExpandedCat(isOpen ? null : cat.id); setNewSubName(""); }}
+                  className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors hover:bg-white/5 ${isOpen ? "bg-white/5" : ""}`}
+                >
+                  <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: cat.color }} />
+                  <span className="flex-1">{cat.name}</span>
+                  <span className="text-xs" style={{ color: "var(--text-muted)" }}>
+                    {catSubs.length > 0 ? `${catSubs.length} шт` : "—"}
+                  </span>
+                  <ChevronDown size={14} className={`transition-transform ${isOpen ? "rotate-180" : ""}`} style={{ color: "var(--text-muted)" }} />
+                </button>
+
+                {isOpen && (
+                  <div className="ml-5 mt-1 space-y-1 border-l border-white/5 pl-3">
+                    {catSubs.map((s) => (
+                      <div key={s.id} className="group flex items-center gap-1.5 rounded-lg px-2 py-1.5 hover:bg-white/5">
+                        {editSubId === s.id ? (
+                          <div className="flex flex-1 items-center gap-1">
+                            <input
+                              value={editSubName}
+                              onChange={(e) => setEditSubName(e.target.value)}
+                              onKeyDown={(e) => { if (e.key === "Enter") saveSub(s.id); if (e.key === "Escape") setEditSubId(null); }}
+                              className="!py-1 !text-xs flex-1"
+                              autoFocus
+                            />
+                            <button onClick={() => saveSub(s.id)} className="rounded p-0.5 text-green-400 hover:bg-green-400/10"><Check size={12} /></button>
+                            <button onClick={() => setEditSubId(null)} className="rounded p-0.5 hover:bg-white/10" style={{ color: "var(--text-muted)" }}><X size={12} /></button>
+                          </div>
+                        ) : (
+                          <>
+                            <span className="flex-1 text-xs">{s.name}</span>
+                            <button onClick={() => { setEditSubId(s.id); setEditSubName(s.name); }} className="rounded p-0.5 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-white/10" style={{ color: "var(--text-muted)" }}><Pencil size={11} /></button>
+                            <button onClick={() => deleteSub(s.id)} className="rounded p-0.5 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-red-400/10" style={{ color: "#f87171" }}><Trash2 size={11} /></button>
+                          </>
+                        )}
+                      </div>
+                    ))}
+                    <div className="flex gap-1.5 pt-1">
+                      <input
+                        value={newSubName}
+                        onChange={(e) => setNewSubName(e.target.value)}
+                        onKeyDown={(e) => e.key === "Enter" && addSub(cat.id)}
+                        placeholder="Новая подкатегория"
+                        className="!py-1.5 !text-xs flex-1"
+                      />
+                      <button onClick={() => addSub(cat.id)} disabled={!newSubName.trim()} className="btn-primary flex shrink-0 items-center gap-1 !px-2.5 !py-1.5 !text-xs disabled:opacity-40">
+                        <Plus size={12} /> Добавить
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       </div>
 
