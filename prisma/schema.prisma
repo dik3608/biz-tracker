@@ -1,0 +1,51 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum TxType {
+  INCOME
+  EXPENSE
+}
+
+model Category {
+  id        String   @id @default(cuid())
+  name      String
+  type      TxType
+  slug      String
+  color     String   @default("#6366f1")
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+
+  transactions Transaction[]
+
+  @@unique([type, slug])
+}
+
+model Transaction {
+  id          String   @id @default(cuid())
+  type        TxType
+  amount      Decimal  @db.Decimal(12, 2)
+  description String
+  date        DateTime @db.Date
+  tags        String   @default("")
+  categoryId  String
+  category    Category @relation(fields: [categoryId], references: [id])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([date])
+  @@index([type])
+  @@index([categoryId])
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+}
