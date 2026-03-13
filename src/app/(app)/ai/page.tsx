@@ -675,6 +675,8 @@ function ActionCard({
     const cur = payload.currency === "EUR" ? " EUR" : "";
     rows.push({ label: "Сумма", value: `$${Number(payload.amount).toFixed(2)}${cur}` });
   }
+  if (payload.categoryName) rows.push({ label: "Категория", value: String(payload.categoryName) });
+  if (payload.subcategoryName) rows.push({ label: "Подкатегория", value: String(payload.subcategoryName) });
   if (payload.date) rows.push({ label: "Дата", value: String(payload.date) });
   if (payload.name) rows.push({ label: "Название", value: String(payload.name) });
 

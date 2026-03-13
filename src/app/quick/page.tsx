@@ -399,6 +399,8 @@ function QuickActionCard({
   const a = payload.action as string;
   const rows: string[] = [];
   if (payload.type) rows.push(payload.type === "INCOME" ? "💰 Доход" : "📉 Расход");
+  if (payload.categoryName) rows.push(String(payload.categoryName));
+  if (payload.subcategoryName) rows.push(`→ ${payload.subcategoryName}`);
   if (payload.description) rows.push(String(payload.description));
   if (payload.amount) rows.push(`$${Number(payload.amount).toFixed(2)}`);
   if (payload.date) rows.push(String(payload.date));
