@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, Repeat, Plus, Loader2, Sparkles } from "lucide-react";
+import { Check, Repeat, Plus, Loader2, Sparkles, Bot } from "lucide-react";
 
 type Category = {
   id: string;
@@ -66,6 +66,7 @@ export default function AddPage() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [subcategories, setSubcategories] = useState<Subcategory[]>([]);
   const [eurRate, setEurRate] = useState<number>(1.08);
+  const [hasApiKey, setHasApiKey] = useState(false);
 
   useEffect(() => {
     fetch("/api/categories")
@@ -78,6 +79,7 @@ export default function AddPage() {
       .then((r) => r.json())
       .then((d) => setEurRate(d.rate ?? 1.08))
       .catch(() => {});
+    setHasApiKey(!!localStorage.getItem("openai_api_key"));
   }, []);
 
   const [form, setForm] = useState({ ...EMPTY_FORM });
@@ -100,6 +102,7 @@ export default function AddPage() {
     return amt * eurRate;
   }, [form.amount, form.currency, eurRate]);
 
+  /* --- Quick input --- */
   const [quickText, setQuickText] = useState("");
   const quickRef = useRef<HTMLInputElement>(null);
 
@@ -107,18 +110,24 @@ export default function AddPage() {
     const text = quickText.trim();
     if (!text) return;
     const match = text.match(/^(.+?)\s+([\d.,]+)$/);
+    let desc = "";
     if (match) {
-      patch({ description: match[1].trim(), amount: match[2].replace(",", ".") });
+      desc = match[1].trim();
+      patch({ description: desc, amount: match[2].replace(",", ".") });
     } else {
       const numOnly = text.replace(",", ".");
       if (!isNaN(Number(numOnly)) && numOnly !== "") {
         patch({ amount: numOnly });
       } else {
+        desc = text;
         patch({ description: text });
       }
     }
     setQuickText("");
     quickRef.current?.blur();
+    if (desc.length >= 3) {
+      requestSuggestion(desc);
+    }
   };
 
   /* --- AI Suggest --- */
@@ -127,9 +136,10 @@ export default function AddPage() {
   const suggestTimer = useRef<ReturnType<typeof setTimeout>>(null);
 
   const requestSuggestion = useCallback(
-    async (desc: string) => {
+    async (desc?: string) => {
+      const text = desc ?? form.description;
       const apiKey = localStorage.getItem("openai_api_key");
-      if (!apiKey || !desc.trim() || desc.length < 3) {
+      if (!apiKey || !text.trim() || text.length < 3) {
         setAiSuggestion(null);
         return;
       }
@@ -141,7 +151,7 @@ export default function AddPage() {
             "Content-Type": "application/json",
             "X-OpenAI-Key": apiKey,
           },
-          body: JSON.stringify({ description: desc, type: form.type }),
+          body: JSON.stringify({ description: text, type: form.type }),
         });
         if (res.ok) {
           const data = await res.json();
@@ -150,13 +160,16 @@ export default function AddPage() {
       } catch {}
       setAiLoading(false);
     },
-    [form.type],
+    [form.type, form.description],
   );
 
   function onDescriptionChange(val: string) {
     patch({ description: val });
+    setAiSuggestion(null);
     if (suggestTimer.current) clearTimeout(suggestTimer.current);
-    suggestTimer.current = setTimeout(() => requestSuggestion(val), 800);
+    if (val.trim().length >= 3 && hasApiKey) {
+      suggestTimer.current = setTimeout(() => requestSuggestion(val), 1000);
+    }
   }
 
   async function applySuggestion() {
@@ -259,7 +272,7 @@ export default function AddPage() {
           value={quickText}
           onChange={(e) => setQuickText(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && applyQuick()}
-          placeholder="Google Ads 500 или просто сумму…"
+          placeholder="Google Ads 500 или просто описание…"
           className="flex-1"
         />
         <button onClick={applyQuick} className="btn-primary flex items-center gap-1">
@@ -336,53 +349,79 @@ export default function AddPage() {
           )}
         </div>
 
-        {/* description with AI suggest */}
+        {/* description */}
         <div>
-          <div className="relative">
-            <input
-              placeholder="Описание (напр. Bing Ads пополнение)"
-              value={form.description}
-              onChange={(e) => onDescriptionChange(e.target.value)}
-            />
-            {aiLoading && (
-              <Loader2 size={16} className="absolute right-3 top-1/2 -translate-y-1/2 animate-spin text-[var(--accent-blue)]" />
-            )}
-          </div>
-
-          {/* AI suggestion banner */}
-          {aiSuggestion && !aiLoading && (
-            <div className="mt-2 rounded-xl border border-[var(--accent-blue)]/20 bg-[var(--accent-blue)]/5 p-3">
-              <div className="flex items-start gap-2">
-                <Sparkles size={16} className="mt-0.5 shrink-0 text-[var(--accent-blue)]" />
-                <div className="flex-1 text-xs">
-                  <p className="font-medium text-[var(--accent-blue)]">AI рекомендует:</p>
-                  <p className="mt-1">
-                    <span className="font-medium">{aiSuggestion.type === "INCOME" ? "Доход" : "Расход"}</span>
-                    {" → "}
-                    <span className="font-medium">{aiSuggestion.categoryName}</span>
-                    {aiSuggestion.subcategoryName && (
-                      <>
-                        {" → "}
-                        <span className="font-medium">
-                          {aiSuggestion.subcategoryName}
-                          {aiSuggestion.newSubcategory && (
-                            <span className="ml-1 rounded bg-[var(--accent-blue)]/20 px-1.5 py-0.5 text-[10px]">новая</span>
-                          )}
-                        </span>
-                      </>
-                    )}
-                  </p>
-                </div>
-                <button
-                  onClick={applySuggestion}
-                  className="shrink-0 rounded-lg bg-[var(--accent-blue)] px-3 py-1.5 text-xs font-semibold text-white transition hover:brightness-110"
-                >
-                  Подставить
-                </button>
-              </div>
-            </div>
-          )}
+          <input
+            placeholder="Описание (напр. Bing Ads пополнение)"
+            value={form.description}
+            onChange={(e) => onDescriptionChange(e.target.value)}
+          />
         </div>
+
+        {/* AI suggest button */}
+        {hasApiKey && form.description.trim().length >= 3 && (
+          <button
+            onClick={() => requestSuggestion()}
+            disabled={aiLoading}
+            className="flex w-full items-center justify-center gap-2 rounded-xl border border-[var(--accent-blue)]/20 bg-[var(--accent-blue)]/5 py-3 text-sm font-medium text-[var(--accent-blue)] transition-all hover:bg-[var(--accent-blue)]/10 disabled:opacity-50"
+          >
+            {aiLoading ? (
+              <>
+                <Loader2 size={16} className="animate-spin" />
+                AI анализирует…
+              </>
+            ) : (
+              <>
+                <Bot size={16} />
+                AI подсказка — подобрать категорию
+              </>
+            )}
+          </button>
+        )}
+
+        {/* AI suggestion result */}
+        {aiSuggestion && !aiLoading && (
+          <div className="rounded-xl border-2 border-[var(--accent-blue)]/30 bg-[var(--accent-blue)]/5 p-4">
+            <div className="flex items-start gap-3">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[var(--accent-blue)]/15">
+                <Sparkles size={18} className="text-[var(--accent-blue)]" />
+              </div>
+              <div className="flex-1">
+                <p className="text-xs font-semibold text-[var(--accent-blue)]">AI рекомендует:</p>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <span className={`rounded-lg px-2.5 py-1 text-xs font-semibold ${
+                    aiSuggestion.type === "INCOME"
+                      ? "bg-emerald-500/15 text-emerald-400"
+                      : "bg-rose-500/15 text-rose-400"
+                  }`}>
+                    {aiSuggestion.type === "INCOME" ? "Доход" : "Расход"}
+                  </span>
+                  <span className="text-xs text-[var(--text-muted)]">→</span>
+                  <span className="rounded-lg bg-white/10 px-2.5 py-1 text-xs font-semibold">
+                    {aiSuggestion.categoryName}
+                  </span>
+                  {aiSuggestion.subcategoryName && (
+                    <>
+                      <span className="text-xs text-[var(--text-muted)]">→</span>
+                      <span className="rounded-lg bg-white/10 px-2.5 py-1 text-xs font-semibold">
+                        {aiSuggestion.subcategoryName}
+                        {aiSuggestion.newSubcategory && (
+                          <span className="ml-1.5 rounded bg-[var(--accent-blue)]/25 px-1.5 py-0.5 text-[10px] font-medium">новая</span>
+                        )}
+                      </span>
+                    </>
+                  )}
+                </div>
+              </div>
+              <button
+                onClick={applySuggestion}
+                className="shrink-0 rounded-xl bg-[var(--accent-blue)] px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-[var(--accent-blue)]/20 transition hover:brightness-110"
+              >
+                Подставить
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* category */}
         <select
@@ -396,7 +435,7 @@ export default function AddPage() {
         </select>
 
         {/* subcategory */}
-        {form.categoryId && (
+        {form.categoryId && filteredSubs.length > 0 && (
           <select
             value={form.subcategoryId}
             onChange={(e) => patch({ subcategoryId: e.target.value })}
