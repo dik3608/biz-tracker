@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { buildFinancialContext } from "@/lib/ai-context";
 
 const MODEL = "gpt-5.4";
 
@@ -45,11 +46,9 @@ export async function POST(req: NextRequest) {
 
   let contextText = "";
   try {
-    const ctxRes = await fetch(new URL("/api/ai/context", req.url));
-    const ctxData = await ctxRes.json();
-    contextText = ctxData.context || "";
+    contextText = await buildFinancialContext();
   } catch {
-    contextText = "Не удалось загрузить данные. Отвечай на основе общих знаний.";
+    contextText = "Не удалось загрузить данные. Отвечай на основе того что есть.";
   }
 
   const systemPrompt = SYSTEM_PROMPT_TEMPLATE.replace("{CONTEXT}", contextText);
