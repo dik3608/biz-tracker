@@ -13,7 +13,7 @@ import {
 
 const navItems = [
   { href: "/", label: "Главная", icon: LayoutDashboard },
-  { href: "/entries", label: "Записи", icon: List },
+  { href: "/transactions", label: "Записи", icon: List },
   { href: "/add", label: "Добавить", icon: PlusCircle },
   { href: "/reports", label: "Отчёты", icon: BarChart3 },
   { href: "/settings", label: "Настройки", icon: Settings },

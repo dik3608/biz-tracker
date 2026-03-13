@@ -1,0 +1,4 @@
+-- AlterTable
+ALTER TABLE "Transaction" ADD COLUMN     "currency" TEXT NOT NULL DEFAULT 'USD',
+ADD COLUMN     "exchangeRate" DECIMAL(10,6) NOT NULL DEFAULT 1,
+ADD COLUMN     "originalAmount" DECIMAL(12,2) NOT NULL DEFAULT 0;

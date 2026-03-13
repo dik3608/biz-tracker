@@ -45,6 +45,8 @@ export async function GET(req: NextRequest) {
     transactions: transactions.map((t) => ({
       ...t,
       amount: Number(t.amount),
+      originalAmount: Number(t.originalAmount),
+      exchangeRate: Number(t.exchangeRate),
     })),
     total,
     page,
@@ -54,7 +56,7 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   const body = await req.json();
-  const { type, amount, description, categoryId, date, tags } = body;
+  const { type, amount, description, categoryId, date, tags, currency, exchangeRate } = body;
 
   if (!type || !amount || !description || !categoryId || !date) {
     return NextResponse.json(
@@ -77,10 +79,17 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  const cur = currency === "EUR" ? "EUR" : "USD";
+  const rate = cur === "EUR" && exchangeRate ? Number(exchangeRate) : 1;
+  const amountUSD = cur === "EUR" ? amount * rate : amount;
+
   const transaction = await prisma.transaction.create({
     data: {
       type,
-      amount: new Prisma.Decimal(amount),
+      amount: new Prisma.Decimal(amountUSD),
+      originalAmount: new Prisma.Decimal(amount),
+      currency: cur,
+      exchangeRate: new Prisma.Decimal(rate),
       description,
       categoryId,
       date: new Date(date),
@@ -90,7 +99,12 @@ export async function POST(req: NextRequest) {
   });
 
   return NextResponse.json(
-    { ...transaction, amount: Number(transaction.amount) },
+    {
+      ...transaction,
+      amount: Number(transaction.amount),
+      originalAmount: Number(transaction.originalAmount),
+      exchangeRate: Number(transaction.exchangeRate),
+    },
     { status: 201 },
   );
 }

@@ -34,7 +34,7 @@ export async function GET(req: NextRequest) {
   });
 
   const BOM = "\uFEFF";
-  const header = "Дата,Тип,Категория,Описание,Сумма,Теги";
+  const header = "Дата,Тип,Категория,Описание,Сумма (USD),Валюта,Оригинал,Курс,Теги";
   const rows = transactions.map((t) => {
     const date = t.date.toISOString().split("T")[0];
     const txType = t.type === "INCOME" ? "Доход" : "Расход";
@@ -44,6 +44,9 @@ export async function GET(req: NextRequest) {
       escapeCsv(t.category.name),
       escapeCsv(t.description),
       Number(t.amount).toFixed(2),
+      t.currency,
+      Number(t.originalAmount).toFixed(2),
+      Number(t.exchangeRate).toFixed(4),
       escapeCsv(t.tags),
     ].join(",");
   });

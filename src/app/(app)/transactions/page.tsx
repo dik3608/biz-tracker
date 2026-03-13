@@ -23,6 +23,9 @@ type Transaction = {
   id: string;
   type: "INCOME" | "EXPENSE";
   amount: number;
+  originalAmount: number;
+  currency: string;
+  exchangeRate: number;
   description: string;
   date: string;
   tags: string;
@@ -37,10 +40,13 @@ type Filters = {
   search: string;
 };
 
-const EUR = new Intl.NumberFormat("de-DE", {
-  style: "currency",
-  currency: "EUR",
-});
+const fmtUSD = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
+const fmtEUR = new Intl.NumberFormat("de-DE", { style: "currency", currency: "EUR" });
+function fmtAmt(tx: Transaction) {
+  const a = tx.originalAmount || tx.amount;
+  const c = tx.currency || "USD";
+  return c === "EUR" ? fmtEUR.format(a) : fmtUSD.format(a);
+}
 
 function fmtDate(iso: string) {
   const d = new Date(iso);
@@ -191,6 +197,7 @@ export default function TransactionsPage() {
     description: "",
     date: "",
     tags: "",
+    currency: "USD" as "USD" | "EUR",
   });
   const [saving, setSaving] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -199,11 +206,12 @@ export default function TransactionsPage() {
     setEditing(tx);
     setEditForm({
       type: tx.type,
-      amount: String(tx.amount),
+      amount: String(tx.originalAmount || tx.amount),
       categoryId: tx.category.id,
       description: tx.description,
       date: toInputDate(tx.date),
       tags: tx.tags ?? "",
+      currency: (tx.currency as "USD" | "EUR") || "USD",
     });
     setShowDeleteConfirm(false);
   };
@@ -227,6 +235,7 @@ export default function TransactionsPage() {
           description: editForm.description,
           date: editForm.date,
           tags: editForm.tags,
+          currency: editForm.currency,
         }),
       });
       setEditing(null);
@@ -444,7 +453,7 @@ export default function TransactionsPage() {
                       }`}
                     >
                       {tx.type === "EXPENSE" ? "−\u00A0" : "+\u00A0"}
-                      {EUR.format(tx.amount)}
+                      {fmtAmt(tx)}
                     </td>
                   </tr>
                 ))}
@@ -487,7 +496,7 @@ export default function TransactionsPage() {
                   }`}
                 >
                   {tx.type === "EXPENSE" ? "−" : "+"}
-                  {EUR.format(tx.amount)}
+                  {fmtAmt(tx)}
                 </span>
               </div>
             ))}
@@ -583,7 +592,22 @@ export default function TransactionsPage() {
               ))}
             </div>
 
-            {/* amount */}
+            {/* currency + amount */}
+            <div className="flex gap-1.5">
+              {(["USD", "EUR"] as const).map((c) => (
+                <button
+                  key={c}
+                  onClick={() => setEditForm((f) => ({ ...f, currency: c }))}
+                  className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
+                    editForm.currency === c
+                      ? "bg-[var(--accent-blue)] text-white"
+                      : "bg-white/5 text-[var(--text-muted)]"
+                  }`}
+                >
+                  {c === "USD" ? "$ USD" : "€ EUR"}
+                </button>
+              ))}
+            </div>
             <input
               type="number"
               step="0.01"
