@@ -70,7 +70,7 @@ const ACTION_LABELS: Record<string, string> = {
 
 function parseAllActionBlocks(content: string): Record<string, unknown>[] {
   const results: Record<string, unknown>[] = [];
-  const regex = /```action\s*\n([\s\S]*?)```/g;
+  const regex = /```action\s*\n?([\s\S]*?)```/g;
   let match;
   while ((match = regex.exec(content)) !== null) {
     try {
@@ -86,7 +86,7 @@ function parseAllActionBlocks(content: string): Record<string, unknown>[] {
 }
 
 function stripActionBlocks(content: string): string {
-  return content.replace(/```action\s*\n[\s\S]*?```/g, "").trim();
+  return content.replace(/```action\s*\n?[\s\S]*?```/g, "").trim();
 }
 
 export default function AIPage() {
@@ -101,6 +101,7 @@ export default function AIPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState("");
   const [pendingActions, setPendingActions] = useState<Map<string, PendingAction>>(new Map());
+  const actionsRef = useRef<Map<string, PendingAction>>(new Map());
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const editInputRef = useRef<HTMLInputElement>(null);
@@ -195,10 +196,20 @@ export default function AIPage() {
     setEditingId(null);
   }
 
+  function updateAction(key: string, patch: Partial<PendingAction>) {
+    setPendingActions((prev) => {
+      const m = new Map(prev);
+      const existing = m.get(key);
+      if (existing) m.set(key, { ...existing, ...patch });
+      actionsRef.current = m;
+      return m;
+    });
+  }
+
   async function executeAction(key: string) {
-    const pa = pendingActions.get(key);
-    if (!pa) return;
-    setPendingActions((prev) => new Map(prev).set(key, { ...pa, status: "executing" }));
+    const pa = actionsRef.current.get(key);
+    if (!pa || pa.status !== "pending") return;
+    updateAction(key, { status: "executing" });
 
     try {
       const res = await fetch("/api/ai/action", {
@@ -207,44 +218,44 @@ export default function AIPage() {
         body: JSON.stringify(pa.payload),
       });
       const data = await res.json();
-      setPendingActions((prev) =>
-        new Map(prev).set(key, { ...pa, status: data.ok ? "done" : "error", result: data.result }),
-      );
-      const msg: Message = {
-        role: "assistant",
-        content: data.ok ? `✅ **Выполнено:** ${data.result}` : `❌ **Ошибка:** ${data.result}`,
-      };
-      setMessages((prev) => [...prev, msg]);
+      updateAction(key, { status: data.ok ? "done" : "error", result: data.result });
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          content: data.ok ? `✅ **Выполнено:** ${data.result}` : `❌ **Ошибка:** ${data.result}`,
+        },
+      ]);
     } catch (err) {
-      setPendingActions((prev) =>
-        new Map(prev).set(key, { ...pa, status: "error", result: String(err) }),
-      );
+      updateAction(key, { status: "error", result: String(err) });
     }
   }
 
   function rejectAction(key: string) {
-    const pa = pendingActions.get(key);
-    if (!pa) return;
-    setPendingActions((prev) => new Map(prev).set(key, { ...pa, status: "rejected" }));
+    updateAction(key, { status: "rejected" });
     setMessages((prev) => [...prev, { role: "assistant", content: "🚫 Действие отменено." }]);
   }
 
   async function confirmAll(keys: string[]) {
     for (const key of keys) {
-      const pa = pendingActions.get(key);
+      const pa = actionsRef.current.get(key);
       if (pa?.status === "pending") {
         await executeAction(key);
+        await new Promise((r) => setTimeout(r, 100));
       }
     }
   }
 
   function rejectAll(keys: string[]) {
-    const m = new Map(pendingActions);
-    keys.forEach((k) => {
-      const pa = m.get(k);
-      if (pa?.status === "pending") m.set(k, { ...pa, status: "rejected" });
+    setPendingActions((prev) => {
+      const m = new Map(prev);
+      keys.forEach((k) => {
+        const pa = m.get(k);
+        if (pa?.status === "pending") m.set(k, { ...pa, status: "rejected" });
+      });
+      actionsRef.current = m;
+      return m;
     });
-    setPendingActions(m);
     setMessages((prev) => [...prev, { role: "assistant", content: "🚫 Все действия отменены." }]);
   }
 
@@ -325,11 +336,9 @@ export default function AIPage() {
         setPendingActions((prev) => {
           const m = new Map(prev);
           actions.forEach((payload, idx) => {
-            m.set(`${assistantMsgIndex}-${idx}`, {
-              payload,
-              status: "pending",
-            });
+            m.set(`${assistantMsgIndex}-${idx}`, { payload, status: "pending" });
           });
+          actionsRef.current = m;
           return m;
         });
       }

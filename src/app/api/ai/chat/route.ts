@@ -81,14 +81,21 @@ delete_subcategory:
 {"action":"create_transaction","type":"EXPENSE","amount":135,"description":"Комиссия агентства 15% от $900","categoryName":"Google Ads","subcategoryName":"Комиссии","date":"2026-03-13","currency":"USD"}
 \`\`\`
 
-ВАЖНО:
+КРИТИЧЕСКИ ВАЖНО:
 - Сегодня: ${new Date().toISOString().split("T")[0]}
 - Вчера: ${new Date(Date.now() - 86400000).toISOString().split("T")[0]}
 - Позавчера: ${new Date(Date.now() - 172800000).toISOString().split("T")[0]}
-- Для categoryName/subcategoryName используй ТОЧНЫЕ названия из контекста если категория существует
-- Если категории нет — напиши нужное имя, система автоматически создаст
-- НЕ НУЖЕН отдельный create_category перед create_transaction — система сделает это сама!
-- Для удаления/редактирования записи — найди transactionId в контексте по описанию/дате`;
+- categoryName/subcategoryName — ТОЧНЫЕ названия. Система сама найдёт или создаст
+- НЕ НУЖЕН отдельный create_category — система создаст автоматически!
+- Для удаления/редактирования — найди transactionId в контексте
+
+САМОЕ ВАЖНОЕ ПРАВИЛО — КАЖДОМУ ДЕЙСТВИЮ СВОЙ БЛОК:
+Если пользователь просит 2 вещи — ДВА блока \`\`\`action.
+Если 5 вещей — ПЯТЬ блоков.
+Если 10 — ДЕСЯТЬ.
+НИКОГДА не пропускай действия! Каждая операция = свой \`\`\`action блок.
+Пользователь подтвердит ВСЕ разом одной кнопкой.
+ЗАПРЕЩЕНО описать действие текстом без блока \`\`\`action — пользователь не сможет его подтвердить!`;
 
 export async function POST(req: NextRequest) {
   const apiKey = req.headers.get("x-openai-key");

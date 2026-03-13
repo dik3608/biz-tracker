@@ -54,6 +54,7 @@ export default function QuickPage() {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [pendingActions, setPendingActions] = useState<Map<string, PendingAction>>(new Map());
+  const actionsRef = useRef<Map<string, PendingAction>>(new Map());
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -83,10 +84,20 @@ export default function QuickPage() {
     setShowSettings(false);
   }
 
+  function updateAction(key: string, patch: Partial<PendingAction>) {
+    setPendingActions((prev) => {
+      const m = new Map(prev);
+      const existing = m.get(key);
+      if (existing) m.set(key, { ...existing, ...patch });
+      actionsRef.current = m;
+      return m;
+    });
+  }
+
   async function executeAction(key: string) {
-    const pa = pendingActions.get(key);
-    if (!pa) return;
-    setPendingActions((p) => new Map(p).set(key, { ...pa, status: "executing" }));
+    const pa = actionsRef.current.get(key);
+    if (!pa || pa.status !== "pending") return;
+    updateAction(key, { status: "executing" });
     try {
       const res = await fetch(`${SITE}/api/ai/action`, {
         method: "POST",
@@ -94,44 +105,41 @@ export default function QuickPage() {
         body: JSON.stringify(pa.payload),
       });
       const data = await res.json();
-      setPendingActions((p) =>
-        new Map(p).set(key, { ...pa, status: data.ok ? "done" : "error", result: data.result }),
-      );
+      updateAction(key, { status: data.ok ? "done" : "error", result: data.result });
       setMessages((prev) => [
         ...prev,
-        {
-          role: "assistant",
-          content: data.ok ? `✅ ${data.result}` : `❌ ${data.result}`,
-        },
+        { role: "assistant", content: data.ok ? `✅ ${data.result}` : `❌ ${data.result}` },
       ]);
     } catch (err) {
-      setPendingActions((p) =>
-        new Map(p).set(key, { ...pa, status: "error", result: String(err) }),
-      );
+      updateAction(key, { status: "error", result: String(err) });
     }
   }
 
   function rejectAction(key: string) {
-    const pa = pendingActions.get(key);
-    if (!pa) return;
-    setPendingActions((p) => new Map(p).set(key, { ...pa, status: "rejected" }));
+    updateAction(key, { status: "rejected" });
     setMessages((prev) => [...prev, { role: "assistant", content: "🚫 Отменено" }]);
   }
 
   async function confirmAll(keys: string[]) {
     for (const k of keys) {
-      const pa = pendingActions.get(k);
-      if (pa?.status === "pending") await executeAction(k);
+      const pa = actionsRef.current.get(k);
+      if (pa?.status === "pending") {
+        await executeAction(k);
+        await new Promise((r) => setTimeout(r, 100));
+      }
     }
   }
 
   function rejectAll(keys: string[]) {
-    const m = new Map(pendingActions);
-    keys.forEach((k) => {
-      const pa = m.get(k);
-      if (pa?.status === "pending") m.set(k, { ...pa, status: "rejected" });
+    setPendingActions((prev) => {
+      const m = new Map(prev);
+      keys.forEach((k) => {
+        const pa = m.get(k);
+        if (pa?.status === "pending") m.set(k, { ...pa, status: "rejected" });
+      });
+      actionsRef.current = m;
+      return m;
     });
-    setPendingActions(m);
     setMessages((prev) => [...prev, { role: "assistant", content: "🚫 Все отменено" }]);
   }
 
@@ -196,20 +204,27 @@ export default function QuickPage() {
         }
       }
 
-      const actionRegex = /```action\s*\n([\s\S]*?)```/g;
+      const actionRegex = /```action\s*\n?([\s\S]*?)```/g;
       let match;
       let idx = 0;
+      const newActions: [string, PendingAction][] = [];
       while ((match = actionRegex.exec(full)) !== null) {
         try {
           const parsed = JSON.parse(match[1].trim());
           const items = Array.isArray(parsed) ? parsed : [parsed];
           items.forEach((payload: ActionPayload) => {
-            setPendingActions((p) =>
-              new Map(p).set(`${aMsgIdx}-${idx}`, { payload, status: "pending" }),
-            );
+            newActions.push([`${aMsgIdx}-${idx}`, { payload, status: "pending" }]);
             idx++;
           });
         } catch {}
+      }
+      if (newActions.length > 0) {
+        setPendingActions((prev) => {
+          const m = new Map(prev);
+          newActions.forEach(([k, v]) => m.set(k, v));
+          actionsRef.current = m;
+          return m;
+        });
       }
     } catch {
       setMessages((prev) => [...prev, { role: "assistant", content: "❌ Ошибка связи" }]);
