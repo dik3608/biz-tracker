@@ -32,7 +32,16 @@ export async function POST(req: NextRequest) {
   }
 
   const body = await req.json();
-  const { messages = [], sessionId = "default" } = body;
+  const { messages = [], sessionId } = body;
+
+  let sid = sessionId;
+
+  if (!sid) {
+    const session = await prisma.chatSession.create({
+      data: { title: "Новый чат" },
+    });
+    sid = session.id;
+  }
 
   let contextText = "";
   try {
@@ -48,7 +57,11 @@ export async function POST(req: NextRequest) {
   const lastUserMsg = messages[messages.length - 1];
   if (lastUserMsg?.role === "user") {
     await prisma.chatMessage.create({
-      data: { role: "user", content: lastUserMsg.content, sessionId },
+      data: { role: "user", content: lastUserMsg.content, sessionId: sid },
+    });
+    await prisma.chatSession.update({
+      where: { id: sid },
+      data: { updatedAt: new Date() },
     });
   }
 
@@ -71,7 +84,7 @@ export async function POST(req: NextRequest) {
       messages: openaiMessages,
       stream: true,
       temperature: 0.3,
-      max_tokens: 4096,
+      max_completion_tokens: 4096,
     }),
   });
 
@@ -85,10 +98,16 @@ export async function POST(req: NextRequest) {
 
   const encoder = new TextEncoder();
   let fullResponse = "";
-  const sid = sessionId;
+  const currentSessionId = sid;
+  const isFirstMessage = messages.length === 1;
+  const firstUserText = messages[0]?.content || "";
 
   const stream = new ReadableStream({
     async start(controller) {
+      controller.enqueue(
+        encoder.encode(`data: ${JSON.stringify({ sessionId: currentSessionId })}\n\n`),
+      );
+
       const reader = openaiRes.body!.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
@@ -113,7 +132,9 @@ export async function POST(req: NextRequest) {
               const delta = parsed.choices?.[0]?.delta?.content;
               if (delta) {
                 fullResponse += delta;
-                controller.enqueue(encoder.encode(`data: ${JSON.stringify({ content: delta })}\n\n`));
+                controller.enqueue(
+                  encoder.encode(`data: ${JSON.stringify({ content: delta })}\n\n`),
+                );
               }
             } catch {}
           }
@@ -124,7 +145,18 @@ export async function POST(req: NextRequest) {
 
         if (fullResponse) {
           await prisma.chatMessage.create({
-            data: { role: "assistant", content: fullResponse, sessionId: sid },
+            data: { role: "assistant", content: fullResponse, sessionId: currentSessionId },
+          });
+        }
+
+        if (isFirstMessage && firstUserText) {
+          const title =
+            firstUserText.length > 50
+              ? firstUserText.slice(0, 50) + "..."
+              : firstUserText;
+          await prisma.chatSession.update({
+            where: { id: currentSessionId },
+            data: { title },
           });
         }
       } catch (err) {

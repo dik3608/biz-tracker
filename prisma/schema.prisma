@@ -53,11 +53,23 @@ model Session {
   createdAt DateTime @default(now())
 }
 
+model ChatSession {
+  id        String   @id @default(cuid())
+  title     String   @default("Новый чат")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  messages ChatMessage[]
+
+  @@index([updatedAt])
+}
+
 model ChatMessage {
   id        String   @id @default(cuid())
   role      String
   content   String
-  sessionId String   @default("default")
+  sessionId String
+  session   ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   createdAt DateTime @default(now())
 
   @@index([sessionId, createdAt])

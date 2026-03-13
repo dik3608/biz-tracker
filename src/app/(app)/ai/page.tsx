@@ -3,18 +3,30 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Bot,
+  Check,
   Download,
   Key,
   Loader2,
+  Menu,
+  MessageSquarePlus,
+  Pencil,
   Send,
   Sparkles,
   Trash2,
+  X,
 } from "lucide-react";
 import { renderMarkdown } from "@/lib/markdown";
 
 interface Message {
   role: "user" | "assistant";
   content: string;
+}
+
+interface ChatSession {
+  id: string;
+  title: string;
+  updatedAt: string;
+  _count?: { messages: number };
 }
 
 const QUICK_ACTIONS = [
@@ -29,19 +41,37 @@ const QUICK_ACTIONS = [
 ];
 
 export default function AIPage() {
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [apiKey, setApiKey] = useState("");
   const [keyInput, setKeyInput] = useState("");
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editTitle, setEditTitle] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const editInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const stored = localStorage.getItem("openai_api_key") ?? "";
     setApiKey(stored);
     setKeyInput(stored);
   }, []);
+
+  const fetchSessions = useCallback(async () => {
+    try {
+      const res = await fetch("/api/ai/sessions");
+      const data = await res.json();
+      setSessions(data.sessions ?? []);
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    if (apiKey) fetchSessions();
+  }, [apiKey, fetchSessions]);
 
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -55,6 +85,61 @@ export default function AIPage() {
     const k = keyInput.trim();
     localStorage.setItem("openai_api_key", k);
     setApiKey(k);
+  }
+
+  async function loadSession(id: string) {
+    setActiveSessionId(id);
+    setSidebarOpen(false);
+    try {
+      const res = await fetch(`/api/ai/sessions/${id}`);
+      const data = await res.json();
+      setMessages(
+        (data.messages ?? []).map((m: { role: string; content: string }) => ({
+          role: m.role as "user" | "assistant",
+          content: m.content,
+        })),
+      );
+    } catch {
+      setMessages([]);
+    }
+  }
+
+  async function createNewChat() {
+    setActiveSessionId(null);
+    setMessages([]);
+    setSidebarOpen(false);
+  }
+
+  async function deleteSession(id: string) {
+    try {
+      await fetch(`/api/ai/sessions/${id}`, { method: "DELETE" });
+      setSessions((prev) => prev.filter((s) => s.id !== id));
+      if (activeSessionId === id) {
+        setActiveSessionId(null);
+        setMessages([]);
+      }
+    } catch {}
+  }
+
+  function startRename(s: ChatSession) {
+    setEditingId(s.id);
+    setEditTitle(s.title);
+    setTimeout(() => editInputRef.current?.focus(), 0);
+  }
+
+  async function saveRename(id: string) {
+    if (!editTitle.trim()) return;
+    try {
+      await fetch(`/api/ai/sessions/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: editTitle.trim() }),
+      });
+      setSessions((prev) =>
+        prev.map((s) => (s.id === id ? { ...s, title: editTitle.trim() } : s)),
+      );
+    } catch {}
+    setEditingId(null);
   }
 
   async function sendMessage(text: string) {
@@ -83,7 +168,10 @@ export default function AIPage() {
           "Content-Type": "application/json",
           "X-OpenAI-Key": key,
         },
-        body: JSON.stringify({ messages: updated }),
+        body: JSON.stringify({
+          messages: updated,
+          sessionId: activeSessionId || undefined,
+        }),
       });
 
       if (!res.ok) {
@@ -100,6 +188,7 @@ export default function AIPage() {
       const decoder = new TextDecoder();
       let buffer = "";
       let assistantContent = "";
+      let receivedSessionId = false;
 
       setMessages((prev) => [...prev, { role: "assistant", content: "" }]);
 
@@ -119,6 +208,15 @@ export default function AIPage() {
 
           try {
             const parsed = JSON.parse(data);
+
+            if (parsed.sessionId && !receivedSessionId) {
+              receivedSessionId = true;
+              if (!activeSessionId) {
+                setActiveSessionId(parsed.sessionId);
+              }
+              continue;
+            }
+
             if (parsed.content) {
               assistantContent += parsed.content;
               setMessages((prev) => {
@@ -133,6 +231,8 @@ export default function AIPage() {
           } catch {}
         }
       }
+
+      fetchSessions();
     } catch (err) {
       setMessages((prev) => [
         ...prev,
@@ -151,10 +251,6 @@ export default function AIPage() {
       e.preventDefault();
       sendMessage(input);
     }
-  }
-
-  function clearChat() {
-    setMessages([]);
   }
 
   function downloadReport(content: string) {
@@ -180,7 +276,7 @@ export default function AIPage() {
     setInput(el.value);
   }
 
-  // --- No API key set ---
+  /* --- No API key --- */
   if (!apiKey) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-6 px-4">
@@ -210,133 +306,241 @@ export default function AIPage() {
     );
   }
 
-  // --- Main chat UI ---
+  /* --- Main layout --- */
   return (
-    <div className="flex h-[calc(100vh-2rem)] flex-col md:h-[calc(100vh-1rem)]">
-      {/* Header */}
-      <div className="mb-3 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-[var(--accent-blue)]/15">
-            <Bot className="h-5 w-5 text-[var(--accent-blue)]" />
-          </div>
-          <div>
-            <h1 className="text-lg font-bold leading-tight">AI-ассистент</h1>
-            <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
-              GPT-5.4 · Финансовый аналитик
-            </p>
-          </div>
-        </div>
-        {messages.length > 0 && (
-          <button
-            onClick={clearChat}
-            className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs transition-colors hover:bg-white/5"
-            style={{ color: "var(--text-muted)" }}
-          >
-            <Trash2 size={14} />
-            Очистить
-          </button>
-        )}
-      </div>
+    <div className="flex h-[calc(100vh-2rem)] md:h-[calc(100vh-1rem)]">
+      {/* Overlay for mobile sidebar */}
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 z-40 bg-black/50 md:hidden"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
 
-      {/* Messages area */}
-      <div className="flex-1 overflow-y-auto rounded-2xl border border-white/5 bg-[rgba(15,15,25,0.5)] p-4 pb-24 md:pb-4">
-        {messages.length === 0 ? (
-          <div className="flex h-full flex-col items-center justify-center gap-6">
-            <div className="flex h-20 w-20 items-center justify-center rounded-3xl bg-gradient-to-br from-[var(--accent-blue)]/20 to-[var(--accent-purple)]/20">
-              <Sparkles className="h-10 w-10 text-[var(--accent-blue)]" />
-            </div>
-            <div className="text-center">
-              <h2 className="mb-1 text-lg font-semibold">Привет! Я ваш финансовый аналитик</h2>
-              <p className="text-sm" style={{ color: "var(--text-muted)" }}>
-                Задайте вопрос или выберите быстрое действие
-              </p>
-            </div>
-            <div className="grid w-full max-w-2xl grid-cols-2 gap-2 sm:grid-cols-4">
-              {QUICK_ACTIONS.map((action) => (
-                <button
-                  key={action.label}
-                  onClick={() => sendMessage(action.prompt)}
-                  className="rounded-xl border border-white/5 bg-white/[0.03] px-3 py-2.5 text-left text-xs transition-all hover:border-[var(--accent-blue)]/30 hover:bg-white/5"
-                >
-                  {action.label}
-                </button>
-              ))}
-            </div>
-          </div>
-        ) : (
-          <div className="space-y-4">
-            {messages.map((msg, i) => (
-              <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+      {/* Chat sidebar */}
+      <div
+        className={`fixed left-0 top-0 z-50 flex h-full w-72 flex-col border-r border-white/8 bg-[rgba(12,12,20,0.97)] backdrop-blur-2xl transition-transform md:relative md:z-auto md:translate-x-0 md:border-r md:bg-transparent md:backdrop-blur-none ${
+          sidebarOpen ? "translate-x-0" : "-translate-x-full"
+        } md:w-64 md:shrink-0`}
+      >
+        {/* Sidebar header */}
+        <div className="flex items-center justify-between border-b border-white/5 px-3 py-3">
+          <span className="text-sm font-semibold">Чаты</span>
+          <button
+            onClick={createNewChat}
+            className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs transition-colors hover:bg-white/5"
+            style={{ color: "var(--accent-blue)" }}
+          >
+            <MessageSquarePlus size={14} />
+            Новый
+          </button>
+        </div>
+
+        {/* Session list */}
+        <div className="flex-1 overflow-y-auto px-2 py-2">
+          {sessions.length === 0 ? (
+            <p className="px-2 py-6 text-center text-xs" style={{ color: "var(--text-muted)" }}>
+              Нет чатов. Начните новый диалог.
+            </p>
+          ) : (
+            <div className="space-y-0.5">
+              {sessions.map((s) => (
                 <div
-                  className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed ${
-                    msg.role === "user"
-                      ? "bg-[var(--accent-blue)]/15 text-white"
-                      : "bg-white/[0.04] text-[var(--text)]"
+                  key={s.id}
+                  className={`group flex items-center gap-1 rounded-lg px-2.5 py-2 transition-colors ${
+                    activeSessionId === s.id
+                      ? "bg-[var(--accent-blue)]/10 text-white"
+                      : "text-[var(--text-muted)] hover:bg-white/5 hover:text-[var(--text)]"
                   }`}
                 >
-                  {msg.role === "assistant" ? (
-                    <div className="ai-response">
-                      <div
-                        className="markdown-body"
-                        dangerouslySetInnerHTML={{
-                          __html: renderMarkdown(
-                            msg.content.replace(/```report\n[\s\S]*?```/g, ""),
-                          ),
+                  {editingId === s.id ? (
+                    <div className="flex flex-1 items-center gap-1">
+                      <input
+                        ref={editInputRef}
+                        value={editTitle}
+                        onChange={(e) => setEditTitle(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") saveRename(s.id);
+                          if (e.key === "Escape") setEditingId(null);
                         }}
+                        className="!py-1 !text-xs flex-1"
                       />
-                      {hasReport(msg.content) && (
-                        <button
-                          onClick={() => downloadReport(msg.content)}
-                          className="mt-3 flex items-center gap-1.5 rounded-lg bg-[var(--accent-green)]/15 px-3 py-2 text-xs font-medium text-[var(--accent-green)] transition-colors hover:bg-[var(--accent-green)]/25"
-                        >
-                          <Download size={14} />
-                          Скачать отчёт
-                        </button>
-                      )}
+                      <button
+                        onClick={() => saveRename(s.id)}
+                        className="rounded p-0.5 text-green-400 hover:bg-green-400/10"
+                      >
+                        <Check size={12} />
+                      </button>
+                      <button
+                        onClick={() => setEditingId(null)}
+                        className="rounded p-0.5 hover:bg-white/10"
+                        style={{ color: "var(--text-muted)" }}
+                      >
+                        <X size={12} />
+                      </button>
                     </div>
                   ) : (
-                    <span className="whitespace-pre-wrap">{msg.content}</span>
+                    <>
+                      <button
+                        onClick={() => loadSession(s.id)}
+                        className="flex-1 truncate text-left text-xs"
+                      >
+                        {s.title}
+                      </button>
+                      <button
+                        onClick={() => startRename(s)}
+                        className="shrink-0 rounded p-1 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-white/10"
+                        style={{ color: "var(--text-muted)" }}
+                      >
+                        <Pencil size={11} />
+                      </button>
+                      <button
+                        onClick={() => deleteSession(s.id)}
+                        className="shrink-0 rounded p-1 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-red-400/10"
+                        style={{ color: "#f87171" }}
+                      >
+                        <Trash2 size={11} />
+                      </button>
+                    </>
                   )}
                 </div>
-              </div>
-            ))}
-            {loading && (
-              <div className="flex justify-start">
-                <div className="flex items-center gap-2 rounded-2xl bg-white/[0.04] px-4 py-3 text-sm">
-                  <Loader2 className="h-4 w-4 animate-spin text-[var(--accent-blue)]" />
-                  <span style={{ color: "var(--text-muted)" }}>Анализирую...</span>
-                </div>
-              </div>
-            )}
-            <div ref={messagesEndRef} />
-          </div>
-        )}
+              ))}
+            </div>
+          )}
+        </div>
       </div>
 
-      {/* Input area */}
-      <div className="fixed bottom-16 left-0 right-0 z-30 border-t border-white/5 bg-[rgba(10,10,18,0.95)] px-4 py-3 backdrop-blur-xl md:static md:mt-3 md:border-0 md:bg-transparent md:p-0 md:backdrop-blur-none">
-        <div className="mx-auto flex max-w-3xl items-end gap-2 md:max-w-none">
-          <textarea
-            ref={textareaRef}
-            value={input}
-            onChange={autoResize}
-            onKeyDown={handleKeyDown}
-            placeholder="Спросите что-нибудь..."
-            rows={1}
-            className="flex-1 resize-none !rounded-xl !py-3 !text-sm"
-            style={{ maxHeight: "120px" }}
-          />
+      {/* Main chat area */}
+      <div className="flex flex-1 flex-col">
+        {/* Header */}
+        <div className="mb-2 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setSidebarOpen(true)}
+              className="flex h-8 w-8 items-center justify-center rounded-lg transition-colors hover:bg-white/5 md:hidden"
+            >
+              <Menu size={18} />
+            </button>
+            <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-[var(--accent-blue)]/15">
+              <Bot className="h-4 w-4 text-[var(--accent-blue)]" />
+            </div>
+            <div>
+              <h1 className="text-base font-bold leading-tight">AI-ассистент</h1>
+              <p className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+                GPT-5.4 · Финансовый аналитик
+              </p>
+            </div>
+          </div>
           <button
-            onClick={() => sendMessage(input)}
-            disabled={!input.trim() || loading}
-            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[var(--accent-blue)] text-white transition-all hover:brightness-110 disabled:opacity-40"
+            onClick={createNewChat}
+            className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs transition-colors hover:bg-white/5"
+            style={{ color: "var(--text-muted)" }}
           >
-            {loading ? (
-              <Loader2 className="h-5 w-5 animate-spin" />
-            ) : (
-              <Send className="h-5 w-5" />
-            )}
+            <MessageSquarePlus size={14} />
+            Новый чат
           </button>
+        </div>
+
+        {/* Messages */}
+        <div className="flex-1 overflow-y-auto rounded-2xl border border-white/5 bg-[rgba(15,15,25,0.5)] p-4 pb-24 md:pb-4">
+          {messages.length === 0 ? (
+            <div className="flex h-full flex-col items-center justify-center gap-6">
+              <div className="flex h-20 w-20 items-center justify-center rounded-3xl bg-gradient-to-br from-[var(--accent-blue)]/20 to-[var(--accent-purple)]/20">
+                <Sparkles className="h-10 w-10 text-[var(--accent-blue)]" />
+              </div>
+              <div className="text-center">
+                <h2 className="mb-1 text-lg font-semibold">Привет! Я ваш финансовый аналитик</h2>
+                <p className="text-sm" style={{ color: "var(--text-muted)" }}>
+                  Задайте вопрос или выберите быстрое действие
+                </p>
+              </div>
+              <div className="grid w-full max-w-2xl grid-cols-2 gap-2 sm:grid-cols-4">
+                {QUICK_ACTIONS.map((action) => (
+                  <button
+                    key={action.label}
+                    onClick={() => sendMessage(action.prompt)}
+                    className="rounded-xl border border-white/5 bg-white/[0.03] px-3 py-2.5 text-left text-xs transition-all hover:border-[var(--accent-blue)]/30 hover:bg-white/5"
+                  >
+                    {action.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {messages.map((msg, i) => (
+                <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+                  <div
+                    className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed ${
+                      msg.role === "user"
+                        ? "bg-[var(--accent-blue)]/15 text-white"
+                        : "bg-white/[0.04] text-[var(--text)]"
+                    }`}
+                  >
+                    {msg.role === "assistant" ? (
+                      <div className="ai-response">
+                        <div
+                          className="markdown-body"
+                          dangerouslySetInnerHTML={{
+                            __html: renderMarkdown(
+                              msg.content.replace(/```report\n[\s\S]*?```/g, ""),
+                            ),
+                          }}
+                        />
+                        {hasReport(msg.content) && (
+                          <button
+                            onClick={() => downloadReport(msg.content)}
+                            className="mt-3 flex items-center gap-1.5 rounded-lg bg-[var(--accent-green)]/15 px-3 py-2 text-xs font-medium text-[var(--accent-green)] transition-colors hover:bg-[var(--accent-green)]/25"
+                          >
+                            <Download size={14} />
+                            Скачать отчёт
+                          </button>
+                        )}
+                      </div>
+                    ) : (
+                      <span className="whitespace-pre-wrap">{msg.content}</span>
+                    )}
+                  </div>
+                </div>
+              ))}
+              {loading && (
+                <div className="flex justify-start">
+                  <div className="flex items-center gap-2 rounded-2xl bg-white/[0.04] px-4 py-3 text-sm">
+                    <Loader2 className="h-4 w-4 animate-spin text-[var(--accent-blue)]" />
+                    <span style={{ color: "var(--text-muted)" }}>Анализирую...</span>
+                  </div>
+                </div>
+              )}
+              <div ref={messagesEndRef} />
+            </div>
+          )}
+        </div>
+
+        {/* Input */}
+        <div className="fixed bottom-16 left-0 right-0 z-30 border-t border-white/5 bg-[rgba(10,10,18,0.95)] px-4 py-3 backdrop-blur-xl md:static md:mt-3 md:border-0 md:bg-transparent md:p-0 md:backdrop-blur-none">
+          <div className="mx-auto flex max-w-3xl items-end gap-2 md:max-w-none">
+            <textarea
+              ref={textareaRef}
+              value={input}
+              onChange={autoResize}
+              onKeyDown={handleKeyDown}
+              placeholder="Спросите что-нибудь..."
+              rows={1}
+              className="flex-1 resize-none !rounded-xl !py-3 !text-sm"
+              style={{ maxHeight: "120px" }}
+            />
+            <button
+              onClick={() => sendMessage(input)}
+              disabled={!input.trim() || loading}
+              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[var(--accent-blue)] text-white transition-all hover:brightness-110 disabled:opacity-40"
+            >
+              {loading ? (
+                <Loader2 className="h-5 w-5 animate-spin" />
+              ) : (
+                <Send className="h-5 w-5" />
+              )}
+            </button>
+          </div>
         </div>
       </div>
     </div>
