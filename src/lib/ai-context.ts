@@ -66,7 +66,7 @@ export async function buildFinancialContext(): Promise<string> {
     const sign = t.type === "INCOME" ? "+" : "-";
     const cur = t.currency !== "USD" ? ` (${Number(t.originalAmount).toFixed(2)} ${t.currency})` : "";
     const sub = t.subcategory ? ` > ${t.subcategory.name}` : "";
-    return `${d} | ${t.type} | ${sign}$${Number(t.amount).toFixed(2)}${cur} | ${t.category.name}${sub} | ${t.description}`;
+    return `[id:${t.id}] ${d} | ${t.type} | ${sign}$${Number(t.amount).toFixed(2)}${cur} | ${t.category.name}${sub} | ${t.description}`;
   });
 
   const allSubs = await prisma.subcategory.findMany({ include: { category: true } });
@@ -78,9 +78,11 @@ export async function buildFinancialContext(): Promise<string> {
   });
 
   const catLines = categories.map((c) => {
-    const subs = subsByCategory.get(c.id);
-    const subStr = subs?.length ? ` [подкатегории: ${subs.join(", ")}]` : "";
-    return `- ${c.name} (${c.type}, slug: ${c.slug})${subStr}`;
+    const catSubs = allSubs.filter((s) => s.categoryId === c.id);
+    const subStr = catSubs.length
+      ? ` [подкатегории: ${catSubs.map((s) => `${s.name}(id:${s.id})`).join(", ")}]`
+      : "";
+    return `- ${c.name} (${c.type}, id:${c.id})${subStr}`;
   });
 
   return `=== ФИНАНСОВЫЕ ДАННЫЕ BIZTRACKER ===
