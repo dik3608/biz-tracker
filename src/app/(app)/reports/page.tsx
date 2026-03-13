@@ -313,7 +313,7 @@ export default function ReportsPage() {
                   axisLine={false}
                   tick={AXIS_TICK}
                   tickFormatter={(v: number) =>
-                    v >= 1000 ? `€${(v / 1000).toFixed(0)}k` : `€${v}`
+                    v >= 1000 ? `$${(v / 1000).toFixed(0)}k` : `$${v}`
                   }
                 />
                 <Tooltip
@@ -387,7 +387,7 @@ export default function ReportsPage() {
                   axisLine={false}
                   tick={AXIS_TICK}
                   tickFormatter={(v: number) =>
-                    v >= 1000 ? `€${(v / 1000).toFixed(0)}k` : `€${v}`
+                    v >= 1000 ? `$${(v / 1000).toFixed(0)}k` : `$${v}`
                   }
                 />
                 <Tooltip
@@ -531,7 +531,7 @@ export default function ReportsPage() {
                   axisLine={false}
                   tick={AXIS_TICK}
                   tickFormatter={(v: number) =>
-                    v >= 1000 ? `€${(v / 1000).toFixed(0)}k` : `€${v}`
+                    v >= 1000 ? `$${(v / 1000).toFixed(0)}k` : `$${v}`
                   }
                 />
                 <Tooltip

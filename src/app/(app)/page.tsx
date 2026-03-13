@@ -221,7 +221,7 @@ export default function DashboardPage() {
                   tickLine={false}
                   axisLine={false}
                   tick={{ fill: "#94a3b8", fontSize: 12 }}
-                  tickFormatter={(v: number) => `€${(v / 1000).toFixed(0)}k`}
+                  tickFormatter={(v: number) => `$${(v / 1000).toFixed(0)}k`}
                 />
                 <Tooltip
                   contentStyle={CHART_TOOLTIP_STYLE}
