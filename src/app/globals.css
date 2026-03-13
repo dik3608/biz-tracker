@@ -10,6 +10,7 @@
   --accent-green: #10b981;
   --accent-red: #f43f5e;
   --accent-blue: #6366f1;
+  --accent-purple: #a855f7;
 }
 
 * {
@@ -100,4 +101,67 @@ button {
 
 @media (min-width: 769px) {
   .mobile-tabs { display: none !important; }
+}
+
+/* AI Markdown styles */
+.markdown-body h1 { font-size: 1.4em; font-weight: 700; margin: 0.8em 0 0.4em; }
+.markdown-body h2 { font-size: 1.2em; font-weight: 700; margin: 0.7em 0 0.3em; color: var(--accent-blue); }
+.markdown-body h3 { font-size: 1.05em; font-weight: 600; margin: 0.6em 0 0.3em; }
+.markdown-body h4 { font-size: 1em; font-weight: 600; margin: 0.5em 0 0.2em; }
+.markdown-body strong { font-weight: 700; }
+.markdown-body em { font-style: italic; color: var(--text-muted); }
+
+.markdown-body ul, .markdown-body ol {
+  padding-left: 1.4em;
+  margin: 0.4em 0;
+}
+.markdown-body li {
+  margin: 0.2em 0;
+  list-style: disc;
+}
+
+.markdown-body .md-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.8em 0;
+  font-size: 0.85em;
+}
+.markdown-body .md-table th {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(255,255,255,0.15);
+  color: var(--accent-blue);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.markdown-body .md-table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+}
+.markdown-body .md-table tr:hover td {
+  background: rgba(255,255,255,0.03);
+}
+
+.markdown-body .md-code {
+  background: rgba(0,0,0,0.3);
+  border: 1px solid rgba(255,255,255,0.05);
+  border-radius: 8px;
+  padding: 12px;
+  overflow-x: auto;
+  font-size: 0.85em;
+  margin: 0.5em 0;
+}
+.markdown-body .md-inline-code {
+  background: rgba(255,255,255,0.08);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 0.9em;
+}
+
+.markdown-body p {
+  margin: 0.3em 0;
+}
+
+.ai-response .report-block {
+  display: none;
 }

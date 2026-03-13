@@ -10,6 +10,9 @@ import {
   LogOut,
   Check,
   X,
+  Key,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 
 /* ------------------------------------------------------------------ */
@@ -174,6 +177,23 @@ export default function SettingsPage() {
     URL.revokeObjectURL(url);
   }
 
+  /* ---------- OpenAI API Key ---------- */
+
+  const [apiKey, setApiKey] = useState("");
+  const [apiKeySaved, setApiKeySaved] = useState(false);
+  const [showKey, setShowKey] = useState(false);
+
+  useEffect(() => {
+    const stored = localStorage.getItem("openai_api_key") ?? "";
+    setApiKey(stored);
+  }, []);
+
+  function saveApiKey() {
+    localStorage.setItem("openai_api_key", apiKey.trim());
+    setApiKeySaved(true);
+    setTimeout(() => setApiKeySaved(false), 2000);
+  }
+
   /* ---------- Logout ---------- */
 
   async function handleLogout() {
@@ -233,6 +253,42 @@ export default function SettingsPage() {
             onNewColorChange={setNewExpenseColor}
             onAdd={() => addCategory("EXPENSE")}
           />
+        </div>
+      </div>
+
+      {/* ===== OpenAI API Key ===== */}
+      <div className="glass-card p-5">
+        <h2 className="mb-4 flex items-center gap-2 text-base font-semibold">
+          <Key size={18} className="text-[var(--accent-blue)]" />
+          OpenAI API-ключ
+        </h2>
+        <p className="mb-3 text-xs" style={{ color: "var(--text-muted)" }}>
+          Необходим для работы AI-ассистента. Ключ хранится только в вашем браузере.
+        </p>
+        <div className="flex gap-2">
+          <div className="relative flex-1">
+            <input
+              type={showKey ? "text" : "password"}
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              placeholder="sk-..."
+              className="!pr-10 !py-2 !text-sm w-full"
+            />
+            <button
+              onClick={() => setShowKey(!showKey)}
+              className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 hover:bg-white/10"
+              style={{ color: "var(--text-muted)" }}
+            >
+              {showKey ? <EyeOff size={16} /> : <Eye size={16} />}
+            </button>
+          </div>
+          <button
+            onClick={saveApiKey}
+            className="btn-primary flex shrink-0 items-center gap-1"
+          >
+            {apiKeySaved ? <Check size={14} /> : <Key size={14} />}
+            {apiKeySaved ? "Сохранено!" : "Сохранить"}
+          </button>
         </div>
       </div>
 

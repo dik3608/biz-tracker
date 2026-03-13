@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   BarChart3,
+  Bot,
   LayoutDashboard,
   List,
   PlusCircle,
@@ -13,9 +14,10 @@ import {
 const tabs = [
   { href: "/", label: "Главная", icon: LayoutDashboard },
   { href: "/transactions", label: "Записи", icon: List },
-  { href: "/add", label: "+", icon: PlusCircle, isAdd: true },
+  { href: "/add", label: "Добавить", icon: PlusCircle },
   { href: "/reports", label: "Отчёты", icon: BarChart3 },
-  { href: "/settings", label: "Настройки", icon: Settings },
+  { href: "/ai", label: "AI", icon: Bot },
+  { href: "/settings", label: "Ещё", icon: Settings },
 ];
 
 export default function MobileTabs() {
@@ -23,25 +25,10 @@ export default function MobileTabs() {
 
   return (
     <nav
-      className="mobile-tabs fixed bottom-0 left-0 z-50 hidden w-full items-center justify-around border-t border-white/8 bg-[rgba(10,10,18,0.92)] px-2 pb-[env(safe-area-inset-bottom)] pt-1.5 backdrop-blur-2xl"
+      className="mobile-tabs fixed bottom-0 left-0 z-50 hidden w-full items-center justify-around border-t border-white/8 bg-[rgba(10,10,18,0.92)] px-1 pb-[env(safe-area-inset-bottom)] pt-1 backdrop-blur-2xl"
     >
-      {tabs.map(({ href, label, icon: Icon, isAdd }) => {
+      {tabs.map(({ href, label, icon: Icon }) => {
         const isActive = pathname === href;
-
-        if (isAdd) {
-          return (
-            <Link
-              key={href}
-              href={href}
-              className="flex flex-col items-center justify-center -mt-4"
-            >
-              <span className="flex h-12 w-12 items-center justify-center rounded-full bg-[var(--accent-blue)] shadow-lg shadow-[var(--accent-blue)]/30">
-                <PlusCircle className="h-6 w-6 text-white" />
-              </span>
-            </Link>
-          );
-        }
-
         return (
           <Link
             key={href}

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   BarChart3,
+  Bot,
   LayoutDashboard,
   List,
   LogOut,
@@ -16,6 +17,7 @@ const navItems = [
   { href: "/transactions", label: "Записи", icon: List },
   { href: "/add", label: "Добавить", icon: PlusCircle },
   { href: "/reports", label: "Отчёты", icon: BarChart3 },
+  { href: "/ai", label: "AI", icon: Bot },
   { href: "/settings", label: "Настройки", icon: Settings },
 ];
 
