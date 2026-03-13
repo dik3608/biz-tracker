@@ -4,7 +4,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Bot,
   Check,
+  ChevronDown,
   Download,
+  FileSpreadsheet,
+  FileText,
   Key,
   Loader2,
   Menu,
@@ -16,6 +19,11 @@ import {
   X,
 } from "lucide-react";
 import { renderMarkdown } from "@/lib/markdown";
+import {
+  downloadAsWord,
+  downloadAsExcel,
+  downloadAsText,
+} from "@/lib/export-report";
 
 interface Message {
   role: "user" | "assistant";
@@ -253,18 +261,6 @@ export default function AIPage() {
     }
   }
 
-  function downloadReport(content: string) {
-    const reportMatch = content.match(/```report\n([\s\S]*?)```/);
-    const text = reportMatch ? reportMatch[1] : content;
-    const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `report-${new Date().toISOString().split("T")[0]}.txt`;
-    a.click();
-    URL.revokeObjectURL(url);
-  }
-
   function hasReport(content: string) {
     return content.includes("```report");
   }
@@ -488,13 +484,7 @@ export default function AIPage() {
                           }}
                         />
                         {hasReport(msg.content) && (
-                          <button
-                            onClick={() => downloadReport(msg.content)}
-                            className="mt-3 flex items-center gap-1.5 rounded-lg bg-[var(--accent-green)]/15 px-3 py-2 text-xs font-medium text-[var(--accent-green)] transition-colors hover:bg-[var(--accent-green)]/25"
-                          >
-                            <Download size={14} />
-                            Скачать отчёт
-                          </button>
+                          <ReportDownloadMenu content={msg.content} />
                         )}
                       </div>
                     ) : (
@@ -543,6 +533,73 @@ export default function AIPage() {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Report download dropdown                                            */
+/* ------------------------------------------------------------------ */
+
+function ReportDownloadMenu({ content }: { content: string }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, []);
+
+  return (
+    <div ref={ref} className="relative mt-3">
+      <button
+        onClick={() => setOpen(!open)}
+        className="flex items-center gap-1.5 rounded-lg bg-[var(--accent-green)]/15 px-3 py-2 text-xs font-medium text-[var(--accent-green)] transition-colors hover:bg-[var(--accent-green)]/25"
+      >
+        <Download size={14} />
+        Скачать отчёт
+        <ChevronDown size={12} className={`transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+
+      {open && (
+        <div className="absolute bottom-full left-0 z-50 mb-1 w-48 rounded-xl border border-white/10 bg-[rgba(20,20,35,0.97)] p-1 shadow-xl backdrop-blur-xl">
+          <button
+            onClick={() => { downloadAsWord(content); setOpen(false); }}
+            className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs transition-colors hover:bg-white/5"
+          >
+            <FileText size={14} className="text-blue-400" />
+            <div>
+              <div className="font-medium">Word (.doc)</div>
+              <div style={{ color: "var(--text-muted)" }}>Красивый документ</div>
+            </div>
+          </button>
+          <button
+            onClick={() => { downloadAsExcel(content); setOpen(false); }}
+            className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs transition-colors hover:bg-white/5"
+          >
+            <FileSpreadsheet size={14} className="text-green-400" />
+            <div>
+              <div className="font-medium">Excel (.xlsx)</div>
+              <div style={{ color: "var(--text-muted)" }}>Таблицы и данные</div>
+            </div>
+          </button>
+          <button
+            onClick={() => { downloadAsText(content); setOpen(false); }}
+            className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs transition-colors hover:bg-white/5"
+          >
+            <FileText size={14} style={{ color: "var(--text-muted)" }} />
+            <div>
+              <div className="font-medium">Текст (.txt)</div>
+              <div style={{ color: "var(--text-muted)" }}>Простой текст</div>
+            </div>
+          </button>
+        </div>
+      )}
     </div>
   );
 }
