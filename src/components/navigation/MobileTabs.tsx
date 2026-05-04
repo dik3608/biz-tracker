@@ -17,7 +17,7 @@ const tabs = [
   { href: "/add", label: "Добавить", icon: PlusCircle },
   { href: "/reports", label: "Отчёты", icon: BarChart3 },
   { href: "/ai", label: "AI", icon: Bot },
-  { href: "/settings", label: "Ещё", icon: Settings },
+  { href: "/settings", label: "Настройки", icon: Settings },
 ];
 
 export default function MobileTabs() {
@@ -25,7 +25,7 @@ export default function MobileTabs() {
 
   return (
     <nav
-      className="mobile-tabs fixed bottom-0 left-0 z-50 hidden w-full items-center justify-around border-t border-white/8 bg-[rgba(10,10,18,0.92)] px-1 pb-[env(safe-area-inset-bottom)] pt-1 backdrop-blur-2xl"
+      className="mobile-tabs fixed bottom-0 left-0 z-50 hidden w-full items-center justify-around border-t border-white/10 bg-[rgba(7,8,18,0.86)] px-1 pb-[env(safe-area-inset-bottom)] pt-2 shadow-2xl shadow-black/40 backdrop-blur-2xl"
     >
       {tabs.map(({ href, label, icon: Icon }) => {
         const isActive = pathname === href;
@@ -33,9 +33,9 @@ export default function MobileTabs() {
           <Link
             key={href}
             href={href}
-            className={`flex flex-col items-center gap-0.5 py-1.5 text-[10px] transition-colors ${
+            className={`flex min-w-0 flex-1 flex-col items-center gap-1 rounded-2xl px-1 py-2 text-[10px] font-semibold transition-all ${
               isActive
-                ? "text-[var(--accent-blue)]"
+                ? "bg-white/[0.08] text-white"
                 : "text-[var(--text-muted)]"
             }`}
           >

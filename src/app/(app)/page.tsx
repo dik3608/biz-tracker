@@ -8,6 +8,7 @@ import {
   ArrowUpRight,
   ArrowDownRight,
   Percent,
+  Sparkles,
   Wallet,
 } from "lucide-react";
 import {
@@ -149,7 +150,18 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-6 pb-8">
-      <h1 className="text-2xl font-bold tracking-tight">Дашборд</h1>
+      <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+        <div>
+          <div className="premium-kicker mb-2 flex items-center gap-2">
+            <Sparkles className="h-3.5 w-3.5" />
+            Executive overview
+          </div>
+          <h1 className="text-3xl font-black tracking-tight md:text-4xl">Финансовый центр</h1>
+          <p className="mt-2 max-w-2xl text-sm text-[var(--text-muted)]">
+            Краткая сводка по доходам, расходам, прибыли и последним операциям.
+          </p>
+        </div>
+      </div>
 
       {/* Summary cards */}
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4 md:gap-4">
@@ -202,7 +214,7 @@ export default function DashboardPage() {
       <div className="grid gap-4 md:grid-cols-5">
         {/* Bar + Line chart */}
         <div className="glass-card p-5 md:col-span-3">
-          <h2 className="mb-4 text-base font-semibold">Доходы и расходы</h2>
+          <h2 className="mb-4 text-base font-bold">Динамика бизнеса</h2>
           {chartData ? (
             <ResponsiveContainer width="100%" height={300}>
               <ComposedChart data={chartData} margin={{ top: 4, right: 4, bottom: 0, left: -12 }}>
@@ -246,7 +258,7 @@ export default function DashboardPage() {
 
         {/* Donut chart */}
         <div className="glass-card p-5 md:col-span-2">
-          <h2 className="mb-4 text-base font-semibold">Расходы по категориям</h2>
+          <h2 className="mb-4 text-base font-bold">Структура расходов</h2>
           {donutData ? (
             <ResponsiveContainer width="100%" height={250}>
               <PieChart>
@@ -288,7 +300,7 @@ export default function DashboardPage() {
       {/* Recent transactions */}
       <div className="glass-card p-5">
         <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-base font-semibold">Последние записи</h2>
+          <h2 className="text-base font-bold">Последние записи</h2>
           <Link
             href="/transactions"
             className="text-sm transition-colors hover:text-white"

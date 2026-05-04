@@ -14,6 +14,7 @@ import {
   Key,
   Eye,
   EyeOff,
+  Sparkles,
 } from "lucide-react";
 import { DateRangePreset, getDateRangePreset } from "@/lib/date-utils";
 
@@ -282,7 +283,11 @@ export default function SettingsPage() {
   return (
     <div className="space-y-6 pb-8">
       <div>
-        <h1 className="text-2xl font-bold tracking-tight">Настройки</h1>
+        <div className="premium-kicker mb-2 flex items-center gap-2">
+          <Sparkles className="h-3.5 w-3.5" />
+          Workspace settings
+        </div>
+        <h1 className="text-3xl font-black tracking-tight md:text-4xl">Настройки</h1>
         <p className="mt-1 text-sm text-[var(--text-muted)]">
           Категории, подкатегории, экспорт и API-ключи в одном месте.
         </p>

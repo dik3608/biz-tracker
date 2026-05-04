@@ -47,14 +47,14 @@ interface PendingAction {
 }
 
 const QUICK_ACTIONS = [
-  { label: "📊 Отчёт за месяц", prompt: "Составь детальный отчёт за текущий месяц со всеми доходами, расходами, прибылью и разбивкой по категориям." },
-  { label: "🔝 Топ расходов", prompt: "Покажи топ расходов за текущий месяц с суммами и процентами от общих расходов." },
-  { label: "📈 ROI рекламы", prompt: "Рассчитай ROI рекламных расходов по каждому рекламному каналу." },
-  { label: "🔮 Прогноз", prompt: "Дай прогноз доходов и расходов на следующий месяц на основе трендов." },
-  { label: "📉 Сравнение", prompt: "Сравни текущий месяц с прошлым. Где рост, где падение?" },
-  { label: "⚠️ Аномалии", prompt: "Найди аномалии в транзакциях — необычные суммы, нетипичные операции." },
-  { label: "💰 Оптимизация", prompt: "Предложи способы оптимизации расходов." },
-  { label: "🧾 Налоговая сводка", prompt: "Подготовь сводку для налоговой отчётности." },
+  { label: "Отчёт за месяц", prompt: "Составь детальный отчёт за текущий месяц со всеми доходами, расходами, прибылью и разбивкой по категориям." },
+  { label: "Топ расходов", prompt: "Покажи топ расходов за текущий месяц с суммами и процентами от общих расходов." },
+  { label: "ROI рекламы", prompt: "Рассчитай ROI рекламных расходов по каждому рекламному каналу." },
+  { label: "Прогноз", prompt: "Дай прогноз доходов и расходов на следующий месяц на основе трендов." },
+  { label: "Сравнение", prompt: "Сравни текущий месяц с прошлым. Где рост, где падение?" },
+  { label: "Аномалии", prompt: "Найди аномалии в транзакциях — необычные суммы, нетипичные операции." },
+  { label: "Оптимизация", prompt: "Предложи способы оптимизации расходов." },
+  { label: "Налоговая сводка", prompt: "Подготовь сводку для налоговой отчётности." },
 ];
 
 const ACTION_LABELS: Record<string, string> = {
@@ -404,19 +404,19 @@ export default function AIPage() {
   }
 
   return (
-    <div className="flex h-[calc(100vh-2rem)] md:h-[calc(100vh-1rem)]">
+    <div className="flex h-[calc(100vh-2rem)] overflow-hidden rounded-[28px] border border-white/10 bg-white/[0.025] shadow-2xl shadow-black/25 md:h-[calc(100vh-4rem)]">
       {sidebarOpen && (
         <div className="fixed inset-0 z-40 bg-black/50 md:hidden" onClick={() => setSidebarOpen(false)} />
       )}
 
       {/* Sidebar */}
       <div
-        className={`fixed left-0 top-0 z-50 flex h-full w-72 flex-col border-r border-white/8 bg-[rgba(12,12,20,0.97)] backdrop-blur-2xl transition-transform md:relative md:z-auto md:translate-x-0 md:border-r md:bg-transparent md:backdrop-blur-none ${
+        className={`fixed left-0 top-0 z-50 flex h-full w-72 flex-col border-r border-white/10 bg-[rgba(10,12,24,0.97)] backdrop-blur-2xl transition-transform md:relative md:z-auto md:translate-x-0 md:border-r md:bg-white/[0.025] md:backdrop-blur-none ${
           sidebarOpen ? "translate-x-0" : "-translate-x-full"
         } md:w-64 md:shrink-0`}
       >
         <div className="flex items-center justify-between border-b border-white/5 px-3 py-3">
-          <span className="text-sm font-semibold">Чаты</span>
+          <span className="text-sm font-bold">Диалоги</span>
           <button
             onClick={createNewChat}
             className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs transition-colors hover:bg-white/5"
@@ -481,17 +481,17 @@ export default function AIPage() {
 
       {/* Main */}
       <div className="flex flex-1 flex-col">
-        <div className="mb-2 flex items-center justify-between">
+        <div className="mb-3 flex items-center justify-between px-1">
           <div className="flex items-center gap-2">
             <button onClick={() => setSidebarOpen(true)} className="flex h-8 w-8 items-center justify-center rounded-lg transition-colors hover:bg-white/5 md:hidden">
               <Menu size={18} />
             </button>
-            <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-[var(--accent-blue)]/15">
-              <Bot className="h-4 w-4 text-[var(--accent-blue)]" />
+            <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-gradient-to-br from-[var(--accent-blue)] to-[var(--accent-green)] text-white shadow-lg shadow-[var(--accent-blue)]/20">
+              <Bot className="h-5 w-5" />
             </div>
             <div>
-              <h1 className="text-base font-bold leading-tight">AI-ассистент</h1>
-              <p className="text-[10px]" style={{ color: "var(--text-muted)" }}>GPT-5.4 · Финансовый аналитик · Управление данными</p>
+              <div className="premium-kicker mb-0.5">Financial intelligence</div>
+              <h1 className="text-lg font-black leading-tight">AI-ассистент</h1>
             </div>
           </div>
           <button onClick={createNewChat} className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs transition-colors hover:bg-white/5" style={{ color: "var(--text-muted)" }}>
@@ -501,7 +501,7 @@ export default function AIPage() {
         </div>
 
         {/* Messages */}
-        <div className="flex-1 overflow-y-auto rounded-2xl border border-white/5 bg-[rgba(15,15,25,0.5)] p-4 pb-24 md:pb-4">
+        <div className="flex-1 overflow-y-auto rounded-[24px] border border-white/10 bg-[rgba(15,17,31,0.58)] p-4 pb-24 shadow-inner shadow-black/20 md:pb-4">
           {messages.length === 0 ? (
             <div className="flex h-full flex-col items-center justify-center gap-6">
               <div className="flex h-20 w-20 items-center justify-center rounded-3xl bg-gradient-to-br from-[var(--accent-blue)]/20 to-[var(--accent-purple)]/20">
@@ -518,7 +518,7 @@ export default function AIPage() {
                   <button
                     key={a.label}
                     onClick={() => sendMessage(a.prompt)}
-                    className="rounded-xl border border-white/5 bg-white/[0.03] px-3 py-2.5 text-left text-xs transition-all hover:border-[var(--accent-blue)]/30 hover:bg-white/5"
+                    className="rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-3 text-left text-xs font-semibold transition-all hover:border-[var(--accent-blue)]/35 hover:bg-white/[0.075]"
                   >
                     {a.label}
                   </button>

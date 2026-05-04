@@ -9,6 +9,7 @@ import {
   CheckSquare,
   Trash2,
   Loader2,
+  Sparkles,
 } from "lucide-react";
 import { formatLocalDateKey, todayLocalDateKey } from "@/lib/date-utils";
 
@@ -288,7 +289,11 @@ export default function TransactionsPage() {
   return (
     <div className="space-y-4">
       <div>
-        <h1 className="text-2xl font-bold tracking-tight">Записи</h1>
+        <div className="premium-kicker mb-2 flex items-center gap-2">
+          <Sparkles className="h-3.5 w-3.5" />
+          Ledger control
+        </div>
+        <h1 className="text-3xl font-black tracking-tight md:text-4xl">Записи</h1>
         <p className="mt-1 text-sm text-[var(--text-muted)]">
           Фильтруйте, проверяйте и аккуратно редактируйте финансовые операции.
         </p>

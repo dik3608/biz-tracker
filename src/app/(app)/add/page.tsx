@@ -265,7 +265,11 @@ export default function AddPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold tracking-tight">Добавить запись</h1>
+        <div className="premium-kicker mb-2 flex items-center gap-2">
+          <Sparkles className="h-3.5 w-3.5" />
+          Transaction entry
+        </div>
+        <h1 className="text-3xl font-black tracking-tight md:text-4xl">Добавить запись</h1>
         <p className="mt-1 text-sm text-[var(--text-muted)]">
           Быстро внесите доход или расход, при необходимости с категорией и подкатегорией.
         </p>

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Calendar, TrendingDown, TrendingUp, Wallet, Percent, BarChart3 } from "lucide-react";
+import { Calendar, TrendingDown, TrendingUp, Wallet, Percent, BarChart3, Sparkles } from "lucide-react";
 import {
   ResponsiveContainer,
   ComposedChart,
@@ -274,7 +274,11 @@ export default function ReportsPage() {
     <div className="space-y-6 pb-8">
       <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Отчёты</h1>
+          <div className="premium-kicker mb-2 flex items-center gap-2">
+            <Sparkles className="h-3.5 w-3.5" />
+            Analytics suite
+          </div>
+          <h1 className="text-3xl font-black tracking-tight md:text-4xl">Отчёты</h1>
           <p className="mt-1 text-sm text-[var(--text-muted)]">
             {monthly ? rangeLabel(monthly.period) : "Выберите период для анализа доходов и расходов"}
           </p>
