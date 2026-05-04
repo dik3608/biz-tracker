@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Check, Repeat, Plus, Loader2, Sparkles, Bot } from "lucide-react";
+import { todayLocalDateKey } from "@/lib/date-utils";
 
 type Category = {
   id: string;
@@ -48,7 +49,7 @@ function fmtAmount(amount: number, currency: string) {
 }
 
 function today() {
-  return new Date().toISOString().slice(0, 10);
+  return todayLocalDateKey();
 }
 
 const EMPTY_FORM = {
@@ -263,7 +264,12 @@ export default function AddPage() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-xl font-bold">Добавить запись</h1>
+      <div>
+        <h1 className="text-2xl font-bold tracking-tight">Добавить запись</h1>
+        <p className="mt-1 text-sm text-[var(--text-muted)]">
+          Быстро внесите доход или расход, при необходимости с категорией и подкатегорией.
+        </p>
+      </div>
 
       {/* Quick input */}
       <div className="glass-card-sm flex items-center gap-2 p-3">

@@ -11,7 +11,6 @@ import {
   Wallet,
 } from "lucide-react";
 import {
-  BarChart,
   Bar,
   XAxis,
   YAxis,
@@ -24,6 +23,8 @@ import {
   Cell,
   Legend,
 } from "recharts";
+import { monthShortLabel } from "@/lib/date-utils";
+import { formatCompactUsd, formatUsd } from "@/lib/money";
 
 interface Summary {
   totalIncome: number;
@@ -34,10 +35,14 @@ interface Summary {
 }
 
 interface MonthlyRow {
-  month: number;
+  month: string;
   income: number;
   expense: number;
   profit: number;
+}
+
+interface MonthlyResponse {
+  rows: MonthlyRow[];
 }
 
 interface CategoryRow {
@@ -56,17 +61,7 @@ interface Transaction {
   category: { name: string; color: string };
 }
 
-const MONTH_NAMES = [
-  "Янв", "Фев", "Мар", "Апр", "Май", "Июн",
-  "Июл", "Авг", "Сен", "Окт", "Ноя", "Дек",
-];
-
-const fmt = new Intl.NumberFormat("en-US", {
-  style: "currency",
-  currency: "USD",
-  minimumFractionDigits: 0,
-  maximumFractionDigits: 0,
-});
+const fmt = { format: formatUsd };
 
 function Skeleton({ className = "" }: { className?: string }) {
   return (
@@ -112,7 +107,7 @@ export default function DashboardPage() {
       .catch(() => {});
     fetch("/api/reports/monthly?months=6")
       .then((r) => r.json())
-      .then(setMonthly)
+      .then((d: MonthlyResponse | MonthlyRow[]) => setMonthly(Array.isArray(d) ? d : d.rows))
       .catch(() => {});
     fetch("/api/reports/by-category?type=EXPENSE")
       .then((r) => r.json())
@@ -130,7 +125,7 @@ export default function DashboardPage() {
 
   const chartData = monthly?.map((r) => ({
     ...r,
-    name: MONTH_NAMES[r.month - 1] ?? `M${r.month}`,
+    name: monthShortLabel(r.month),
   }));
 
   const donutData = (() => {
@@ -221,7 +216,7 @@ export default function DashboardPage() {
                   tickLine={false}
                   axisLine={false}
                   tick={{ fill: "#94a3b8", fontSize: 12 }}
-                  tickFormatter={(v: number) => `$${(v / 1000).toFixed(0)}k`}
+                  tickFormatter={formatCompactUsd}
                 />
                 <Tooltip
                   contentStyle={CHART_TOOLTIP_STYLE}

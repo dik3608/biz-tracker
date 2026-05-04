@@ -10,6 +10,7 @@ import {
   Trash2,
   Loader2,
 } from "lucide-react";
+import { formatLocalDateKey, todayLocalDateKey } from "@/lib/date-utils";
 
 type Category = {
   id: string;
@@ -17,6 +18,12 @@ type Category = {
   type: "INCOME" | "EXPENSE";
   color: string;
   slug: string;
+};
+
+type Subcategory = {
+  id: string;
+  name: string;
+  categoryId: string;
 };
 
 type Transaction = {
@@ -30,6 +37,7 @@ type Transaction = {
   date: string;
   tags: string;
   category: { id: string; name: string; color: string };
+  subcategory?: { id: string; name: string } | null;
 };
 
 type Filters = {
@@ -50,7 +58,7 @@ function fmtAmt(tx: Transaction) {
 
 function fmtDate(iso: string) {
   const d = new Date(iso);
-  return `${String(d.getDate()).padStart(2, "0")}.${String(d.getMonth() + 1).padStart(2, "0")}.${d.getFullYear()}`;
+  return `${String(d.getUTCDate()).padStart(2, "0")}.${String(d.getUTCMonth() + 1).padStart(2, "0")}.${d.getUTCFullYear()}`;
 }
 
 function toInputDate(iso: string) {
@@ -64,10 +72,10 @@ function startOfMonth(d: Date) {
 
 function presetRange(key: string): { from: string; to: string } {
   const now = new Date();
-  const fmt = (d: Date) => d.toISOString().slice(0, 10);
+  const fmt = (d: Date) => formatLocalDateKey(d);
   switch (key) {
     case "month":
-      return { from: fmt(startOfMonth(now)), to: fmt(now) };
+      return { from: fmt(startOfMonth(now)), to: todayLocalDateKey() };
     case "prev_month": {
       const s = new Date(now.getFullYear(), now.getMonth() - 1, 1);
       const e = new Date(now.getFullYear(), now.getMonth(), 0);
@@ -81,7 +89,7 @@ function presetRange(key: string): { from: string; to: string } {
       };
     }
     case "year":
-      return { from: fmt(new Date(now.getFullYear(), 0, 1)), to: fmt(now) };
+      return { from: fmt(new Date(now.getFullYear(), 0, 1)), to: todayLocalDateKey() };
     default:
       return { from: "", to: "" };
   }
@@ -92,11 +100,20 @@ function presetRange(key: string): { from: string; to: string } {
 export default function TransactionsPage() {
   /* ── categories ── */
   const [categories, setCategories] = useState<Category[]>([]);
+  const [subcategories, setSubcategories] = useState<Subcategory[]>([]);
+  const [eurRate, setEurRate] = useState(1.08);
 
   useEffect(() => {
     fetch("/api/categories")
       .then((r) => r.json())
       .then((d) => setCategories(d.categories ?? []));
+    fetch("/api/subcategories")
+      .then((r) => r.json())
+      .then((d) => setSubcategories(d.subcategories ?? []));
+    fetch("/api/exchange-rate")
+      .then((r) => r.json())
+      .then((d) => setEurRate(d.rate ?? 1.08))
+      .catch(() => {});
   }, []);
 
   /* ── filters ── */
@@ -164,7 +181,11 @@ export default function TransactionsPage() {
   const toggleSelect = (id: string) =>
     setSelected((prev) => {
       const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
       return next;
     });
 
@@ -194,10 +215,12 @@ export default function TransactionsPage() {
     type: "" as "INCOME" | "EXPENSE",
     amount: "",
     categoryId: "",
+    subcategoryId: "",
     description: "",
     date: "",
     tags: "",
     currency: "USD" as "USD" | "EUR",
+    exchangeRate: 1,
   });
   const [saving, setSaving] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -208,10 +231,12 @@ export default function TransactionsPage() {
       type: tx.type,
       amount: String(tx.originalAmount || tx.amount),
       categoryId: tx.category.id,
+      subcategoryId: tx.subcategory?.id ?? "",
       description: tx.description,
       date: toInputDate(tx.date),
       tags: tx.tags ?? "",
       currency: (tx.currency as "USD" | "EUR") || "USD",
+      exchangeRate: tx.exchangeRate || 1,
     });
     setShowDeleteConfirm(false);
   };
@@ -219,6 +244,10 @@ export default function TransactionsPage() {
   const editCategories = useMemo(
     () => categories.filter((c) => c.type === editForm.type),
     [categories, editForm.type],
+  );
+  const editSubcategories = useMemo(
+    () => subcategories.filter((s) => s.categoryId === editForm.categoryId),
+    [editForm.categoryId, subcategories],
   );
 
   const saveEdit = async () => {
@@ -232,10 +261,12 @@ export default function TransactionsPage() {
           type: editForm.type,
           amount: Number(editForm.amount),
           categoryId: editForm.categoryId,
+          subcategoryId: editForm.subcategoryId || null,
           description: editForm.description,
           date: editForm.date,
           tags: editForm.tags,
           currency: editForm.currency,
+          exchangeRate: editForm.currency === "EUR" ? editForm.exchangeRate : 1,
         }),
       });
       setEditing(null);
@@ -256,7 +287,12 @@ export default function TransactionsPage() {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-xl font-bold">Транзакции</h1>
+      <div>
+        <h1 className="text-2xl font-bold tracking-tight">Записи</h1>
+        <p className="mt-1 text-sm text-[var(--text-muted)]">
+          Фильтруйте, проверяйте и аккуратно редактируйте финансовые операции.
+        </p>
+      </div>
 
       {/* ── Filter bar ── */}
       <div className="glass-card-sm flex flex-wrap items-center gap-2 p-3">
@@ -444,7 +480,14 @@ export default function TransactionsPage() {
                           className="inline-block h-2.5 w-2.5 rounded-full"
                           style={{ background: tx.category.color }}
                         />
-                        {tx.category.name}
+                        <span>
+                          {tx.category.name}
+                          {tx.subcategory && (
+                            <span className="ml-1 text-xs text-[var(--text-muted)]">
+                              / {tx.subcategory.name}
+                            </span>
+                          )}
+                        </span>
                       </span>
                     </td>
                     <td
@@ -488,6 +531,7 @@ export default function TransactionsPage() {
                   <p className="truncate text-sm">{tx.description}</p>
                   <p className="text-xs text-[var(--text-muted)]">
                     {fmtDate(tx.date)} · {tx.category.name}
+                    {tx.subcategory ? ` / ${tx.subcategory.name}` : ""}
                   </p>
                 </div>
                 <span
@@ -577,7 +621,7 @@ export default function TransactionsPage() {
                 <button
                   key={t}
                   onClick={() =>
-                    setEditForm((f) => ({ ...f, type: t, categoryId: "" }))
+                    setEditForm((f) => ({ ...f, type: t, categoryId: "", subcategoryId: "" }))
                   }
                   className={`flex-1 rounded-lg py-2 text-sm font-medium transition ${
                     editForm.type === t
@@ -597,7 +641,13 @@ export default function TransactionsPage() {
               {(["USD", "EUR"] as const).map((c) => (
                 <button
                   key={c}
-                  onClick={() => setEditForm((f) => ({ ...f, currency: c }))}
+                  onClick={() =>
+                    setEditForm((f) => ({
+                      ...f,
+                      currency: c,
+                      exchangeRate: c === "EUR" ? (f.currency === "EUR" ? f.exchangeRate : eurRate) : 1,
+                    }))
+                  }
                   className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
                     editForm.currency === c
                       ? "bg-[var(--accent-blue)] text-white"
@@ -617,12 +667,17 @@ export default function TransactionsPage() {
                 setEditForm((f) => ({ ...f, amount: e.target.value }))
               }
             />
+            {editForm.currency === "EUR" && (
+              <p className="text-xs text-[var(--text-muted)]">
+                Курс сохранения: 1 EUR = {editForm.exchangeRate.toFixed(4)} USD
+              </p>
+            )}
 
             {/* category */}
             <select
               value={editForm.categoryId}
               onChange={(e) =>
-                setEditForm((f) => ({ ...f, categoryId: e.target.value }))
+                setEditForm((f) => ({ ...f, categoryId: e.target.value, subcategoryId: "" }))
               }
             >
               <option value="">Категория</option>
@@ -632,6 +687,22 @@ export default function TransactionsPage() {
                 </option>
               ))}
             </select>
+
+            {editSubcategories.length > 0 && (
+              <select
+                value={editForm.subcategoryId}
+                onChange={(e) =>
+                  setEditForm((f) => ({ ...f, subcategoryId: e.target.value }))
+                }
+              >
+                <option value="">Подкатегория (необязательно)</option>
+                {editSubcategories.map((subcategory) => (
+                  <option key={subcategory.id} value={subcategory.id}>
+                    {subcategory.name}
+                  </option>
+                ))}
+              </select>
+            )}
 
             {/* description */}
             <input

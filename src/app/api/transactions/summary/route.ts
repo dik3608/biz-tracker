@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { formatUtcDateKey, parseDateKey } from "@/lib/date-utils";
+import { roundMoney } from "@/lib/money";
 
 function startOfMonth(d: Date) {
   return new Date(d.getFullYear(), d.getMonth(), 1);
@@ -26,8 +28,18 @@ export async function GET(req: NextRequest) {
   const url = req.nextUrl.searchParams;
 
   const now = new Date();
-  const from = url.get("from") ? new Date(url.get("from")!) : startOfMonth(now);
-  const to = url.get("to") ? new Date(url.get("to")!) : endOfMonth(now);
+  let from = url.get("from") ? parseDateKey(url.get("from")!) : startOfMonth(now);
+  let to = url.get("to") ? parseDateKey(url.get("to")!) : endOfMonth(now);
+  const allTime = url.get("allTime") === "true";
+
+  if (allTime) {
+    const bounds = await prisma.transaction.aggregate({
+      _min: { date: true },
+      _max: { date: true },
+    });
+    from = bounds._min.date ?? parseDateKey(formatUtcDateKey(now));
+    to = bounds._max.date ?? parseDateKey(formatUtcDateKey(now));
+  }
 
   const periodMs = to.getTime() - from.getTime();
   const prevFrom = new Date(from.getTime() - periodMs);
@@ -36,17 +48,22 @@ export async function GET(req: NextRequest) {
   const [totalIncome, totalExpense, prevIncome, prevExpense] = await Promise.all([
     sumByType(from, to, "INCOME"),
     sumByType(from, to, "EXPENSE"),
-    sumByType(prevFrom, prevTo, "INCOME"),
-    sumByType(prevFrom, prevTo, "EXPENSE"),
+    allTime ? Promise.resolve(0) : sumByType(prevFrom, prevTo, "INCOME"),
+    allTime ? Promise.resolve(0) : sumByType(prevFrom, prevTo, "EXPENSE"),
   ]);
 
   return NextResponse.json({
-    totalIncome,
-    totalExpense,
-    profit: totalIncome - totalExpense,
+    totalIncome: roundMoney(totalIncome),
+    totalExpense: roundMoney(totalExpense),
+    profit: roundMoney(totalIncome - totalExpense),
     prevIncome,
     prevExpense,
-    incomeChange: pctChange(totalIncome, prevIncome),
-    expenseChange: pctChange(totalExpense, prevExpense),
+    incomeChange: allTime ? 0 : pctChange(totalIncome, prevIncome),
+    expenseChange: allTime ? 0 : pctChange(totalExpense, prevExpense),
+    period: {
+      from: formatUtcDateKey(from),
+      to: formatUtcDateKey(to),
+      allTime,
+    },
   });
 }

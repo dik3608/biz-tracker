@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Calendar } from "lucide-react";
+import { Calendar, TrendingDown, TrendingUp, Wallet, Percent, BarChart3 } from "lucide-react";
 import {
   ResponsiveContainer,
   ComposedChart,
@@ -14,15 +14,21 @@ import {
   PieChart,
   Pie,
   Cell,
-  Legend,
   AreaChart,
   Area,
   CartesianGrid,
+  Legend,
 } from "recharts";
-
-/* ------------------------------------------------------------------ */
-/*  Types                                                              */
-/* ------------------------------------------------------------------ */
+import {
+  DateRangePreset,
+  getDateRangePreset,
+  monthFullLabel,
+  monthInputToRange,
+  monthShortLabel,
+  rangeLabel,
+  todayLocalDateKey,
+} from "@/lib/date-utils";
+import { formatCompactUsd, formatPercent, formatUsd, roundMoney } from "@/lib/money";
 
 interface MonthlyRow {
   month: string;
@@ -39,149 +45,206 @@ interface CategoryRow {
   percentage: number;
 }
 
-/* ------------------------------------------------------------------ */
-/*  Constants                                                          */
-/* ------------------------------------------------------------------ */
+interface CategoryMonthlyRow {
+  month: string;
+  categories: CategoryRow[];
+}
 
-const MONTH_NAMES = [
-  "Янв", "Фев", "Мар", "Апр", "Май", "Июн",
-  "Июл", "Авг", "Сен", "Окт", "Ноя", "Дек",
+interface MonthlyResponse {
+  period: { from: string; to: string; allTime: boolean };
+  rows: MonthlyRow[];
+  categoryMonthly: CategoryMonthlyRow[];
+  totals: {
+    income: number;
+    expense: number;
+    profit: number;
+    margin: number | null;
+    averageIncome: number;
+    averageExpense: number;
+    activeMonths: number;
+    bestMonth: MonthlyRow | null;
+    worstMonth: MonthlyRow | null;
+  };
+}
+
+type TypeFilter = "ALL" | "INCOME" | "EXPENSE";
+
+const PERIODS: { value: DateRangePreset; label: string }[] = [
+  { value: "current_month", label: "Этот месяц" },
+  { value: "previous_month", label: "Прошлый месяц" },
+  { value: "last_3_months", label: "3 мес" },
+  { value: "last_6_months", label: "6 мес" },
+  { value: "last_12_months", label: "12 мес" },
+  { value: "current_year", label: "Год" },
+  { value: "all_time", label: "Всё время" },
+  { value: "single_month", label: "Один месяц" },
+  { value: "custom", label: "Период" },
 ];
-
-const MONTH_FULL = [
-  "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
-  "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь",
-];
-
-const fmt = new Intl.NumberFormat("en-US", {
-  style: "currency",
-  currency: "USD",
-  minimumFractionDigits: 0,
-  maximumFractionDigits: 0,
-});
-
-const TOOLTIP_STYLE: React.CSSProperties = {
-  backgroundColor: "rgba(15,15,25,0.95)",
-  border: "1px solid rgba(255,255,255,0.08)",
-  borderRadius: "10px",
-  padding: "10px 14px",
-  fontSize: "13px",
-  color: "#e2e8f0",
-  boxShadow: "0 8px 32px rgba(0,0,0,0.4)",
-};
 
 const AXIS_TICK = { fill: "#94a3b8", fontSize: 12 };
-
-type PeriodPreset = 3 | 6 | 12 | "custom";
-type TypeFilter = "ALL" | "EXPENSE" | "INCOME";
-
-function monthLabel(key: string): string {
-  const [, m] = key.split("-");
-  return MONTH_NAMES[Number(m) - 1] ?? key;
-}
-
-function monthFullLabel(key: string): string {
-  const [y, m] = key.split("-");
-  return `${MONTH_FULL[Number(m) - 1]} ${y}`;
-}
+const CHART_GRID = "rgba(255,255,255,0.05)";
+const TOOLTIP_STYLE: React.CSSProperties = {
+  backgroundColor: "rgba(15,15,25,0.97)",
+  border: "1px solid rgba(255,255,255,0.1)",
+  borderRadius: 12,
+  color: "#e2e8f0",
+  boxShadow: "0 14px 40px rgba(0,0,0,0.45)",
+};
 
 function Skeleton({ className = "" }: { className?: string }) {
-  return <div className={`animate-pulse rounded-lg bg-white/5 ${className}`} />;
+  return <div className={`animate-pulse rounded-xl bg-white/5 ${className}`} />;
 }
 
-/* ------------------------------------------------------------------ */
-/*  Page                                                               */
-/* ------------------------------------------------------------------ */
+async function fetchJson<T>(url: string): Promise<T> {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+function buildParams(range: { from: string; to: string }, allTime: boolean) {
+  const params = new URLSearchParams();
+  if (allTime) {
+    params.set("allTime", "true");
+  } else {
+    params.set("from", range.from);
+    params.set("to", range.to);
+  }
+  return params;
+}
 
 export default function ReportsPage() {
-  const [preset, setPreset] = useState<PeriodPreset>(6);
+  const [preset, setPreset] = useState<DateRangePreset>("last_6_months");
+  const [singleMonth, setSingleMonth] = useState(todayLocalDateKey().slice(0, 7));
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("ALL");
 
-  const [monthly, setMonthly] = useState<MonthlyRow[] | null>(null);
-  const [categories, setCategories] = useState<CategoryRow[] | null>(null);
+  const [monthly, setMonthly] = useState<MonthlyResponse | null>(null);
+  const [expenseCategories, setExpenseCategories] = useState<CategoryRow[] | null>(null);
   const [incomeCategories, setIncomeCategories] = useState<CategoryRow[] | null>(null);
+  const [error, setError] = useState("");
 
-  const months = typeof preset === "number" ? preset : 12;
+  const selectedRange = useMemo(() => {
+    if (preset === "single_month") return monthInputToRange(singleMonth);
+    if (preset === "custom" && customFrom && customTo) return { from: customFrom, to: customTo };
+    if (preset === "all_time") return { from: "", to: "" };
+    return getDateRangePreset(preset);
+  }, [preset, singleMonth, customFrom, customTo]);
 
-  /* ---------- date range helpers ---------- */
-
-  const dateRange = useMemo(() => {
-    if (preset === "custom" && customFrom && customTo) {
-      return { from: customFrom, to: customTo };
-    }
-    const now = new Date();
-    const from = new Date(now.getFullYear(), now.getMonth() - months + 1, 1);
-    return {
-      from: from.toISOString().split("T")[0],
-      to: now.toISOString().split("T")[0],
-    };
-  }, [preset, customFrom, customTo, months]);
-
-  /* ---------- fetch monthly ---------- */
+  const allTime = preset === "all_time";
+  const hasUsableRange = allTime || Boolean(selectedRange.from && selectedRange.to);
 
   useEffect(() => {
-    setMonthly(null);
-    const url =
-      preset === "custom" && customFrom && customTo
-        ? `/api/reports/monthly?months=12`
-        : `/api/reports/monthly?months=${months}`;
-    fetch(url)
-      .then((r) => r.json())
-      .then(setMonthly)
-      .catch(() => {});
-  }, [preset, months, customFrom, customTo]);
+    if (!hasUsableRange) return;
 
-  /* ---------- fetch categories ---------- */
+    const params = buildParams(selectedRange, allTime);
+    const expenseParams = new URLSearchParams(params);
+    expenseParams.set("type", "EXPENSE");
+    const incomeParams = new URLSearchParams(params);
+    incomeParams.set("type", "INCOME");
 
-  useEffect(() => {
-    setCategories(null);
-    setIncomeCategories(null);
-    const params = new URLSearchParams({ type: "EXPENSE" });
-    if (dateRange.from) params.set("from", dateRange.from);
-    if (dateRange.to) params.set("to", dateRange.to);
-    fetch(`/api/reports/by-category?${params}`)
-      .then((r) => r.json())
-      .then(setCategories)
-      .catch(() => {});
+    Promise.all([
+      fetchJson<MonthlyResponse>(`/api/reports/monthly?${params}`),
+      fetchJson<CategoryRow[]>(`/api/reports/by-category?${expenseParams}`),
+      fetchJson<CategoryRow[]>(`/api/reports/by-category?${incomeParams}`),
+    ])
+      .then(([monthlyData, expenseData, incomeData]) => {
+        setError("");
+        setMonthly(monthlyData);
+        setExpenseCategories(expenseData);
+        setIncomeCategories(incomeData);
+      })
+      .catch(() => {
+        setError("Не удалось загрузить отчёты. Проверьте соединение и попробуйте ещё раз.");
+        setMonthly({
+          period: { from: selectedRange.from, to: selectedRange.to, allTime },
+          rows: [],
+          categoryMonthly: [],
+          totals: {
+            income: 0,
+            expense: 0,
+            profit: 0,
+            margin: null,
+            averageIncome: 0,
+            averageExpense: 0,
+            activeMonths: 0,
+            bestMonth: null,
+            worstMonth: null,
+          },
+        });
+        setExpenseCategories([]);
+        setIncomeCategories([]);
+      });
+  }, [allTime, hasUsableRange, selectedRange]);
 
-    const incParams = new URLSearchParams({ type: "INCOME" });
-    if (dateRange.from) incParams.set("from", dateRange.from);
-    if (dateRange.to) incParams.set("to", dateRange.to);
-    fetch(`/api/reports/by-category?${incParams}`)
-      .then((r) => r.json())
-      .then(setIncomeCategories)
-      .catch(() => {});
-  }, [dateRange]);
-
-  /* ---------- derived data ---------- */
-
-  const chartData = monthly?.map((r) => ({
-    ...r,
-    name: monthLabel(r.month),
-    fullName: monthFullLabel(r.month),
-  }));
-
-  const filteredChart = chartData?.filter((r) => {
-    if (preset !== "custom") return true;
-    return r.month >= (customFrom ?? "") && r.month <= (customTo ?? "");
-  });
+  const chartData = useMemo(
+    () =>
+      monthly?.rows.map((row) => ({
+        ...row,
+        name: monthShortLabel(row.month),
+        fullName: monthFullLabel(row.month),
+      })) ?? null,
+    [monthly],
+  );
 
   const cumulativeData = useMemo(() => {
-    if (!filteredChart) return null;
-    let acc = 0;
-    return filteredChart.map((r) => {
-      acc += r.profit;
-      return { ...r, cumulative: Math.round(acc * 100) / 100 };
+    if (!chartData) return null;
+    let cumulative = 0;
+    return chartData.map((row) => {
+      cumulative = roundMoney(cumulative + row.profit);
+      return { ...row, cumulative };
     });
-  }, [filteredChart]);
+  }, [chartData]);
 
-  const totalExpense = categories?.reduce((s, c) => s + c.total, 0) ?? 0;
+  const stacked = useMemo(() => {
+    if (!monthly) return null;
+    const totals = new Map<string, CategoryRow>();
+    for (const row of monthly.categoryMonthly) {
+      for (const cat of row.categories) {
+        const existing = totals.get(cat.categoryId);
+        totals.set(cat.categoryId, {
+          ...cat,
+          total: (existing?.total ?? 0) + cat.total,
+        });
+      }
+    }
+
+    const top = [...totals.values()].sort((a, b) => b.total - a.total).slice(0, 7);
+    const topIds = new Set(top.map((cat) => cat.categoryId));
+    const rows =
+      monthly.rows.map((row) => {
+        const monthCategories = monthly.categoryMonthly.find((item) => item.month === row.month)?.categories ?? [];
+        const data: Record<string, string | number> = {
+          month: row.month,
+          name: monthShortLabel(row.month),
+        };
+        let other = 0;
+        for (const cat of monthCategories) {
+          if (topIds.has(cat.categoryId)) {
+            data[`cat_${cat.categoryId}`] = cat.total;
+          } else {
+            other += cat.total;
+          }
+        }
+        if (other > 0) data.cat_other = roundMoney(other);
+        return data;
+      }) ?? [];
+
+    const defs = [
+      ...top.map((cat) => ({
+        key: `cat_${cat.categoryId}`,
+        name: cat.categoryName,
+        color: cat.categoryColor,
+      })),
+      { key: "cat_other", name: "Другое", color: "#64748b" },
+    ];
+
+    return { rows, defs };
+  }, [monthly]);
 
   const donutData = useMemo(() => {
-    if (!categories) return null;
-    const sorted = [...categories].sort((a, b) => b.total - a.total);
+    if (!expenseCategories) return null;
+    const sorted = [...expenseCategories].sort((a, b) => b.total - a.total);
     if (sorted.length <= 6) return sorted;
     const top = sorted.slice(0, 5);
     const rest = sorted.slice(5);
@@ -191,92 +254,84 @@ export default function ReportsPage() {
         categoryId: "__other",
         categoryName: "Другое",
         categoryColor: "#64748b",
-        total: rest.reduce((s, c) => s + c.total, 0),
-        percentage: rest.reduce((s, c) => s + c.percentage, 0),
+        total: roundMoney(rest.reduce((sum, cat) => sum + cat.total, 0)),
+        percentage: roundMoney(rest.reduce((sum, cat) => sum + cat.percentage, 0)),
       },
     ];
-  }, [categories]);
+  }, [expenseCategories]);
 
-  const top5 = categories?.slice(0, 5) ?? [];
-
-  /* ---------- stacked bar data ---------- */
-
-  const stackedData = useMemo(() => {
-    if (!filteredChart || !categories) return null;
-    const catNames = categories.slice(0, 8).map((c) => c.categoryName);
-    return filteredChart.map((r) => {
-      const row: Record<string, number | string> = { name: r.name };
-      const perCat = r.expense / (catNames.length || 1);
-      catNames.forEach((cn, i) => {
-        const cat = categories[i];
-        const share = cat ? (cat.percentage / 100) * r.expense : perCat;
-        row[cn] = Math.round(share * 100) / 100;
-      });
-      return row;
-    });
-  }, [filteredChart, categories]);
-
-  const stackedCategories = categories?.slice(0, 8) ?? [];
-
-  /* ------------------------------------------------------------------ */
-  /*  Render                                                             */
-  /* ------------------------------------------------------------------ */
+  const totals = monthly?.totals;
+  const tableTotals = useMemo(() => {
+    const rows = monthly?.rows ?? [];
+    const income = roundMoney(rows.reduce((sum, row) => sum + row.income, 0));
+    const expense = roundMoney(rows.reduce((sum, row) => sum + row.expense, 0));
+    const profit = roundMoney(income - expense);
+    const margin = income > 0 ? roundMoney((profit / income) * 100) : null;
+    return { income, expense, profit, margin };
+  }, [monthly]);
 
   return (
     <div className="space-y-6 pb-8">
-      <h1 className="text-2xl font-bold tracking-tight">Отчёты</h1>
+      <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Отчёты</h1>
+          <p className="mt-1 text-sm text-[var(--text-muted)]">
+            {monthly ? rangeLabel(monthly.period) : "Выберите период для анализа доходов и расходов"}
+          </p>
+        </div>
+        <div className="flex items-center gap-2 rounded-xl border border-white/8 bg-white/[0.03] px-3 py-2 text-xs text-[var(--text-muted)]">
+          <Calendar size={14} />
+          <span>Данные считаются по сохранённым суммам в USD</span>
+        </div>
+      </div>
 
-      {/* ===== Period Selector ===== */}
-      <div className="glass-card flex flex-wrap items-center gap-3 p-4">
-        <Calendar size={18} style={{ color: "var(--text-muted)" }} />
+      <div className="glass-card space-y-4 p-4">
+        <div className="flex flex-wrap items-center gap-2">
+          {PERIODS.map((item) => (
+            <button
+              key={item.value}
+              onClick={() => setPreset(item.value)}
+              className={preset === item.value ? "btn-primary !px-3 !py-2" : "btn-ghost !px-3 !py-2"}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
 
-        {([3, 6, 12] as const).map((n) => (
-          <button
-            key={n}
-            onClick={() => setPreset(n)}
-            className={preset === n ? "btn-primary" : "btn-ghost"}
-          >
-            {n} мес
-          </button>
-        ))}
-
-        <button
-          onClick={() => setPreset("custom")}
-          className={preset === "custom" ? "btn-primary" : "btn-ghost"}
-        >
-          Период
-        </button>
-
-        {preset === "custom" && (
-          <div className="flex items-center gap-2">
+        {preset === "single_month" && (
+          <div className="grid gap-3 md:grid-cols-[220px_1fr] md:items-center">
+            <label className="text-xs font-medium text-[var(--text-muted)]">Выберите месяц</label>
             <input
-              type="date"
-              value={customFrom}
-              onChange={(e) => setCustomFrom(e.target.value)}
-              className="!w-auto"
-            />
-            <span style={{ color: "var(--text-muted)" }}>—</span>
-            <input
-              type="date"
-              value={customTo}
-              onChange={(e) => setCustomTo(e.target.value)}
-              className="!w-auto"
+              type="month"
+              value={singleMonth}
+              onChange={(event) => setSingleMonth(event.target.value)}
+              className="max-w-xs"
             />
           </div>
         )}
 
-        <div className="ml-auto flex gap-2">
+        {preset === "custom" && (
+          <div className="grid gap-3 md:grid-cols-[160px_220px_20px_220px_1fr] md:items-center">
+            <label className="text-xs font-medium text-[var(--text-muted)]">Свой период</label>
+            <input type="date" value={customFrom} onChange={(event) => setCustomFrom(event.target.value)} />
+            <span className="text-center text-[var(--text-muted)]">—</span>
+            <input type="date" value={customTo} onChange={(event) => setCustomTo(event.target.value)} />
+            {!hasUsableRange && <span className="text-xs text-[var(--text-muted)]">Укажите обе даты.</span>}
+          </div>
+        )}
+
+        <div className="flex flex-wrap gap-2 border-t border-white/5 pt-4">
           {(
             [
-              ["ALL", "Все"],
-              ["EXPENSE", "Расходы"],
-              ["INCOME", "Доходы"],
+              ["ALL", "Доходы + расходы"],
+              ["INCOME", "Только доходы"],
+              ["EXPENSE", "Только расходы"],
             ] as const
-          ).map(([val, label]) => (
+          ).map(([value, label]) => (
             <button
-              key={val}
-              onClick={() => setTypeFilter(val)}
-              className={typeFilter === val ? "btn-primary" : "btn-ghost"}
+              key={value}
+              onClick={() => setTypeFilter(value)}
+              className={typeFilter === value ? "btn-primary !px-3 !py-2" : "btn-ghost !px-3 !py-2"}
             >
               {label}
             </button>
@@ -284,411 +339,308 @@ export default function ReportsPage() {
         </div>
       </div>
 
-      {/* ===== Charts Grid ===== */}
-      <div className="grid gap-4 md:grid-cols-2">
-        {/* --- Monthly Bar+Line Chart --- */}
-        <div className="glass-card p-5 md:col-span-2">
-          <h2 className="mb-4 text-base font-semibold">
-            Доходы и расходы по месяцам
-          </h2>
-          {filteredChart ? (
-            <ResponsiveContainer width="100%" height={350}>
-              <ComposedChart
-                data={filteredChart}
-                margin={{ top: 4, right: 4, bottom: 0, left: -12 }}
-              >
-                <CartesianGrid
-                  strokeDasharray="3 3"
-                  stroke="rgba(255,255,255,0.04)"
-                  vertical={false}
-                />
-                <XAxis
-                  dataKey="name"
-                  tickLine={false}
-                  axisLine={false}
-                  tick={AXIS_TICK}
-                />
-                <YAxis
-                  tickLine={false}
-                  axisLine={false}
-                  tick={AXIS_TICK}
-                  tickFormatter={(v: number) =>
-                    v >= 1000 ? `$${(v / 1000).toFixed(0)}k` : `$${v}`
-                  }
-                />
-                <Tooltip
-                  contentStyle={TOOLTIP_STYLE}
-                  formatter={(value: unknown, name: unknown) => [
-                    fmt.format(Number(value)),
-                    String(name) === "income"
-                      ? "Доход"
-                      : String(name) === "expense"
-                        ? "Расход"
-                        : "Прибыль",
-                  ]}
-                  labelFormatter={(l) => String(l)}
-                  cursor={{ fill: "rgba(255,255,255,0.03)" }}
-                />
-                {(typeFilter === "ALL" || typeFilter === "INCOME") && (
-                  <Bar
-                    dataKey="income"
-                    fill="#10b981"
-                    radius={[4, 4, 0, 0]}
-                    barSize={24}
-                  />
-                )}
-                {(typeFilter === "ALL" || typeFilter === "EXPENSE") && (
-                  <Bar
-                    dataKey="expense"
-                    fill="#f43f5e"
-                    radius={[4, 4, 0, 0]}
-                    barSize={24}
-                  />
-                )}
-                <Line
-                  type="monotone"
-                  dataKey="profit"
-                  stroke="#6366f1"
-                  strokeWidth={2}
-                  dot={{ r: 3, fill: "#6366f1", strokeWidth: 0 }}
-                  activeDot={{ r: 5 }}
-                />
-              </ComposedChart>
-            </ResponsiveContainer>
-          ) : (
-            <Skeleton className="h-[350px] w-full" />
-          )}
+      {error && (
+        <div className="rounded-xl border border-rose-500/25 bg-rose-500/10 px-4 py-3 text-sm text-rose-300">
+          {error}
         </div>
+      )}
 
-        {/* --- Stacked Bar Chart --- */}
-        <div className="glass-card p-5">
-          <h2 className="mb-4 text-base font-semibold">
-            Расходы по категориям (помесячно)
-          </h2>
-          {stackedData && stackedCategories.length > 0 ? (
-            <ResponsiveContainer width="100%" height={350}>
-              <BarChart
-                data={stackedData}
-                margin={{ top: 4, right: 4, bottom: 0, left: -12 }}
-              >
-                <CartesianGrid
-                  strokeDasharray="3 3"
-                  stroke="rgba(255,255,255,0.04)"
-                  vertical={false}
-                />
-                <XAxis
-                  dataKey="name"
-                  tickLine={false}
-                  axisLine={false}
-                  tick={AXIS_TICK}
-                />
-                <YAxis
-                  tickLine={false}
-                  axisLine={false}
-                  tick={AXIS_TICK}
-                  tickFormatter={(v: number) =>
-                    v >= 1000 ? `$${(v / 1000).toFixed(0)}k` : `$${v}`
-                  }
-                />
-                <Tooltip
-                  contentStyle={TOOLTIP_STYLE}
-                  formatter={(value: unknown) => [fmt.format(Number(value))]}
-                  cursor={{ fill: "rgba(255,255,255,0.03)" }}
-                />
-                {stackedCategories.map((cat) => (
-                  <Bar
-                    key={cat.categoryId}
-                    dataKey={cat.categoryName}
-                    stackId="a"
-                    fill={cat.categoryColor}
-                  />
-                ))}
-              </BarChart>
-            </ResponsiveContainer>
-          ) : (
-            <Skeleton className="h-[350px] w-full" />
-          )}
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        {totals ? (
+          <>
+            <MetricCard title="Доход" value={formatUsd(totals.income)} icon={<TrendingUp size={18} />} tone="income" />
+            <MetricCard title="Расход" value={formatUsd(totals.expense)} icon={<TrendingDown size={18} />} tone="expense" />
+            <MetricCard title="Прибыль" value={formatUsd(totals.profit)} icon={<Wallet size={18} />} tone={totals.profit >= 0 ? "income" : "expense"} />
+            <MetricCard title="Маржа" value={formatPercent(totals.margin)} icon={<Percent size={18} />} tone="neutral" />
+          </>
+        ) : (
+          Array.from({ length: 4 }).map((_, index) => <Skeleton key={index} className="h-28" />)
+        )}
+      </div>
+
+      {totals && (
+        <div className="grid gap-4 md:grid-cols-3">
+          <InfoCard label="Средний доход в активный месяц" value={formatUsd(totals.averageIncome)} />
+          <InfoCard label="Средний расход в активный месяц" value={formatUsd(totals.averageExpense)} />
+          <InfoCard
+            label="Лучший / худший месяц"
+            value={`${totals.bestMonth ? monthShortLabel(totals.bestMonth.month) : "—"} / ${totals.worstMonth ? monthShortLabel(totals.worstMonth.month) : "—"}`}
+          />
         </div>
+      )}
 
-        {/* --- Donut Chart --- */}
-        <div className="glass-card p-5">
-          <h2 className="mb-4 text-base font-semibold">
-            Распределение расходов
-          </h2>
-          {donutData ? (
-            <div className="flex flex-col items-center md:flex-row md:items-start md:gap-4">
-              <ResponsiveContainer width="100%" height={300}>
-                <PieChart>
-                  <Pie
-                    data={donutData}
-                    dataKey="total"
-                    nameKey="categoryName"
-                    cx="50%"
-                    cy="50%"
-                    innerRadius={65}
-                    outerRadius={110}
-                    paddingAngle={3}
-                    strokeWidth={0}
-                    label={false}
-                  >
-                    {donutData.map((entry) => (
-                      <Cell
-                        key={entry.categoryId}
-                        fill={entry.categoryColor}
-                      />
-                    ))}
-                  </Pie>
+      <div className="grid gap-4 xl:grid-cols-2">
+        <SectionCard className="xl:col-span-2" title="Доходы, расходы и прибыль по месяцам">
+          {chartData ? (
+            chartData.length > 0 ? (
+              <ResponsiveContainer width="100%" height={380}>
+                <ComposedChart data={chartData} margin={{ top: 12, right: 20, bottom: 8, left: 8 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={CHART_GRID} vertical={false} />
+                  <XAxis dataKey="name" tickLine={false} axisLine={false} tick={AXIS_TICK} />
+                  <YAxis width={64} tickLine={false} axisLine={false} tick={AXIS_TICK} tickFormatter={formatCompactUsd} />
                   <Tooltip
                     contentStyle={TOOLTIP_STYLE}
-                    formatter={(value: unknown) => [fmt.format(Number(value)), "Сумма"]}
+                    formatter={(value: unknown, name: unknown) => [
+                      formatUsd(Number(value)),
+                      name === "income" ? "Доход" : name === "expense" ? "Расход" : "Прибыль",
+                    ]}
+                    labelFormatter={(_, payload) => payload?.[0]?.payload?.fullName ?? ""}
+                    cursor={{ fill: "rgba(255,255,255,0.04)" }}
                   />
-                  <Legend
-                    layout="vertical"
-                    verticalAlign="middle"
-                    align="right"
-                    iconType="circle"
-                    iconSize={8}
-                    formatter={(value: string) => (
-                      <span style={{ color: "#94a3b8", fontSize: 12 }}>
-                        {value}
-                      </span>
-                    )}
-                  />
-                  {/* Center text */}
-                  <text
-                    x="50%"
-                    y="48%"
-                    textAnchor="middle"
-                    dominantBaseline="middle"
-                    fill="#e2e8f0"
-                    fontSize={18}
-                    fontWeight={700}
-                  >
-                    {fmt.format(totalExpense)}
-                  </text>
-                  <text
-                    x="50%"
-                    y="57%"
-                    textAnchor="middle"
-                    dominantBaseline="middle"
-                    fill="#94a3b8"
-                    fontSize={11}
-                  >
-                    всего
-                  </text>
-                </PieChart>
+                  <Legend formatter={(value) => (value === "income" ? "Доход" : value === "expense" ? "Расход" : "Прибыль")} />
+                  {(typeFilter === "ALL" || typeFilter === "INCOME") && <Bar dataKey="income" fill="#10b981" radius={[6, 6, 0, 0]} barSize={24} />}
+                  {(typeFilter === "ALL" || typeFilter === "EXPENSE") && <Bar dataKey="expense" fill="#f43f5e" radius={[6, 6, 0, 0]} barSize={24} />}
+                  {typeFilter === "ALL" && (
+                    <Line type="monotone" dataKey="profit" stroke="#6366f1" strokeWidth={3} dot={{ r: 4, fill: "#6366f1", strokeWidth: 0 }} activeDot={{ r: 6 }} />
+                  )}
+                </ComposedChart>
               </ResponsiveContainer>
-            </div>
-          ) : (
-            <Skeleton className="h-[300px] w-full" />
-          )}
-        </div>
-
-        {/* --- Area Chart: Cumulative Profit --- */}
-        <div className="glass-card p-5">
-          <h2 className="mb-4 text-base font-semibold">
-            Накопительная прибыль
-          </h2>
-          {cumulativeData ? (
-            <ResponsiveContainer width="100%" height={300}>
-              <AreaChart
-                data={cumulativeData}
-                margin={{ top: 4, right: 4, bottom: 0, left: -12 }}
-              >
-                <defs>
-                  <linearGradient
-                    id="profitGradient"
-                    x1="0"
-                    y1="0"
-                    x2="0"
-                    y2="1"
-                  >
-                    <stop
-                      offset="5%"
-                      stopColor="#10b981"
-                      stopOpacity={0.3}
-                    />
-                    <stop
-                      offset="95%"
-                      stopColor="#10b981"
-                      stopOpacity={0}
-                    />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid
-                  strokeDasharray="3 3"
-                  stroke="rgba(255,255,255,0.04)"
-                  vertical={false}
-                />
-                <XAxis
-                  dataKey="name"
-                  tickLine={false}
-                  axisLine={false}
-                  tick={AXIS_TICK}
-                />
-                <YAxis
-                  tickLine={false}
-                  axisLine={false}
-                  tick={AXIS_TICK}
-                  tickFormatter={(v: number) =>
-                    v >= 1000 ? `$${(v / 1000).toFixed(0)}k` : `$${v}`
-                  }
-                />
-                <Tooltip
-                  contentStyle={TOOLTIP_STYLE}
-                  formatter={(value: unknown) => [
-                    fmt.format(Number(value)),
-                    "Накопительная прибыль",
-                  ]}
-                  labelFormatter={(l) => String(l)}
-                />
-                <Area
-                  type="monotone"
-                  dataKey="cumulative"
-                  stroke="#10b981"
-                  strokeWidth={2}
-                  fill="url(#profitGradient)"
-                  dot={{ r: 3, fill: "#10b981", strokeWidth: 0 }}
-                  activeDot={{ r: 5 }}
-                />
-              </AreaChart>
-            </ResponsiveContainer>
-          ) : (
-            <Skeleton className="h-[300px] w-full" />
-          )}
-        </div>
-
-        {/* --- Top 5 Categories --- */}
-        <div className="glass-card p-5">
-          <h2 className="mb-4 text-base font-semibold">Топ расходов</h2>
-          {categories ? (
-            top5.length > 0 ? (
-              <div className="space-y-3">
-                {top5.map((cat, i) => (
-                  <div key={cat.categoryId} className="space-y-1">
-                    <div className="flex items-center justify-between text-sm">
-                      <div className="flex items-center gap-2">
-                        <span className="w-5 text-right text-xs" style={{ color: "var(--text-muted)" }}>
-                          {i + 1}
-                        </span>
-                        <span
-                          className="h-2.5 w-2.5 shrink-0 rounded-full"
-                          style={{ backgroundColor: cat.categoryColor }}
-                        />
-                        <span>{cat.categoryName}</span>
-                      </div>
-                      <div className="flex items-center gap-3">
-                        <span className="font-semibold tabular-nums">
-                          {fmt.format(cat.total)}
-                        </span>
-                        <span
-                          className="w-12 text-right text-xs"
-                          style={{ color: "var(--text-muted)" }}
-                        >
-                          {cat.percentage.toFixed(1)}%
-                        </span>
-                      </div>
-                    </div>
-                    <div className="ml-7 h-1.5 overflow-hidden rounded-full bg-white/5">
-                      <div
-                        className="h-full rounded-full transition-all duration-500"
-                        style={{
-                          width: `${cat.percentage}%`,
-                          backgroundColor: cat.categoryColor,
-                        }}
-                      />
-                    </div>
-                  </div>
-                ))}
-              </div>
             ) : (
-              <p className="text-sm" style={{ color: "var(--text-muted)" }}>
-                Нет данных за выбранный период
-              </p>
+              <EmptyState text="За выбранный период нет операций." />
             )
           ) : (
-            <div className="space-y-4">
-              {Array.from({ length: 5 }).map((_, i) => (
-                <Skeleton key={i} className="h-8 w-full" />
-              ))}
-            </div>
+            <Skeleton className="h-[380px]" />
           )}
-        </div>
+        </SectionCard>
 
-        {/* --- Monthly Comparison Table --- */}
-        <div className="glass-card overflow-x-auto p-5 md:col-span-2">
-          <h2 className="mb-4 text-base font-semibold">
-            Сравнение по месяцам
-          </h2>
-          {filteredChart ? (
-            <table className="w-full text-sm">
-              <thead>
-                <tr
-                  className="text-left text-xs"
-                  style={{ color: "var(--text-muted)" }}
-                >
-                  <th className="pb-3 font-medium">Месяц</th>
-                  <th className="pb-3 text-right font-medium">Доход</th>
-                  <th className="pb-3 text-right font-medium">Расход</th>
-                  <th className="pb-3 text-right font-medium">Прибыль</th>
-                  <th className="pb-3 text-right font-medium">Маржа %</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredChart.map((r) => {
-                  const margin =
-                    r.income > 0
-                      ? ((r.profit / r.income) * 100).toFixed(1)
-                      : "—";
-                  const marginNum = r.income > 0 ? r.profit / r.income : 0;
-                  return (
-                    <tr
-                      key={r.month}
-                      className="border-t"
-                      style={{ borderColor: "var(--border)" }}
-                    >
-                      <td className="py-2.5 font-medium">{r.fullName}</td>
-                      <td className="py-2.5 text-right tabular-nums income-text">
-                        {fmt.format(r.income)}
-                      </td>
-                      <td className="py-2.5 text-right tabular-nums expense-text">
-                        {fmt.format(r.expense)}
-                      </td>
-                      <td
-                        className="py-2.5 text-right font-semibold tabular-nums"
-                        style={{
-                          color:
-                            r.profit >= 0
-                              ? "var(--accent-green)"
-                              : "var(--accent-red)",
-                        }}
-                      >
-                        {fmt.format(r.profit)}
-                      </td>
-                      <td
-                        className="py-2.5 text-right tabular-nums"
-                        style={{
-                          color:
-                            marginNum >= 0.3
-                              ? "var(--accent-green)"
-                              : marginNum >= 0.1
-                                ? "var(--accent-blue)"
-                                : "var(--accent-red)",
-                        }}
-                      >
-                        {margin}
-                        {margin !== "—" && "%"}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+        <SectionCard title="Расходы по категориям помесячно">
+          {stacked ? (
+            stacked.rows.length > 0 && stacked.defs.length > 0 ? (
+              <ResponsiveContainer width="100%" height={330}>
+                <BarChart data={stacked.rows} margin={{ top: 12, right: 16, bottom: 8, left: 8 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={CHART_GRID} vertical={false} />
+                  <XAxis dataKey="name" tickLine={false} axisLine={false} tick={AXIS_TICK} />
+                  <YAxis width={64} tickLine={false} axisLine={false} tick={AXIS_TICK} tickFormatter={formatCompactUsd} />
+                  <Tooltip
+                    contentStyle={TOOLTIP_STYLE}
+                    formatter={(value: unknown, name: unknown) => [
+                      formatUsd(Number(value)),
+                      stacked.defs.find((item) => item.key === name)?.name ?? String(name),
+                    ]}
+                    cursor={{ fill: "rgba(255,255,255,0.04)" }}
+                  />
+                  {stacked.defs.map((cat) => (
+                    <Bar key={cat.key} dataKey={cat.key} stackId="expense" fill={cat.color} name={cat.name} />
+                  ))}
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <EmptyState text="Нет расходов по категориям за выбранный период." />
+            )
           ) : (
-            <Skeleton className="h-48 w-full" />
+            <Skeleton className="h-[330px]" />
           )}
-        </div>
+        </SectionCard>
+
+        <SectionCard title="Распределение расходов">
+          {donutData ? (
+            donutData.length > 0 ? (
+              <div className="grid gap-4 lg:grid-cols-[minmax(220px,1fr)_220px]">
+                <ResponsiveContainer width="100%" height={300}>
+                  <PieChart>
+                    <Pie data={donutData} dataKey="total" nameKey="categoryName" cx="50%" cy="50%" innerRadius={72} outerRadius={112} paddingAngle={3} strokeWidth={0}>
+                      {donutData.map((entry) => (
+                        <Cell key={entry.categoryId} fill={entry.categoryColor} />
+                      ))}
+                    </Pie>
+                    <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(value: unknown) => [formatUsd(Number(value)), "Сумма"]} />
+                    <text x="50%" y="48%" textAnchor="middle" dominantBaseline="middle" fill="#e2e8f0" fontSize={18} fontWeight={700}>
+                      {formatUsd(expenseCategories?.reduce((sum, cat) => sum + cat.total, 0) ?? 0)}
+                    </text>
+                    <text x="50%" y="57%" textAnchor="middle" dominantBaseline="middle" fill="#94a3b8" fontSize={11}>
+                      расходов
+                    </text>
+                  </PieChart>
+                </ResponsiveContainer>
+                <CategoryList rows={donutData} />
+              </div>
+            ) : (
+              <EmptyState text="Нет расходов за выбранный период." />
+            )
+          ) : (
+            <Skeleton className="h-[300px]" />
+          )}
+        </SectionCard>
+
+        <SectionCard title="Накопительная прибыль">
+          {cumulativeData ? (
+            cumulativeData.length > 0 ? (
+              <ResponsiveContainer width="100%" height={300}>
+                <AreaChart data={cumulativeData} margin={{ top: 12, right: 16, bottom: 8, left: 8 }}>
+                  <defs>
+                    <linearGradient id="profitGradient" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#10b981" stopOpacity={0.35} />
+                      <stop offset="95%" stopColor="#10b981" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" stroke={CHART_GRID} vertical={false} />
+                  <XAxis dataKey="name" tickLine={false} axisLine={false} tick={AXIS_TICK} />
+                  <YAxis width={64} tickLine={false} axisLine={false} tick={AXIS_TICK} tickFormatter={formatCompactUsd} />
+                  <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(value: unknown) => [formatUsd(Number(value)), "Накопительно"]} />
+                  <Area type="monotone" dataKey="cumulative" stroke="#10b981" strokeWidth={3} fill="url(#profitGradient)" dot={{ r: 4, fill: "#10b981", strokeWidth: 0 }} activeDot={{ r: 6 }} />
+                </AreaChart>
+              </ResponsiveContainer>
+            ) : (
+              <EmptyState text="Нет данных для динамики прибыли." />
+            )
+          ) : (
+            <Skeleton className="h-[300px]" />
+          )}
+        </SectionCard>
+
+        <SectionCard title="Топ расходов">
+          {expenseCategories ? <CategoryList rows={expenseCategories.slice(0, 8)} /> : <Skeleton className="h-60" />}
+        </SectionCard>
+
+        <SectionCard title="Топ доходов">
+          {incomeCategories ? <CategoryList rows={incomeCategories.slice(0, 8)} /> : <Skeleton className="h-60" />}
+        </SectionCard>
+
+        <SectionCard className="xl:col-span-2" title="Сравнение по месяцам">
+          {chartData ? (
+            chartData.length > 0 ? (
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[720px] text-sm">
+                  <thead>
+                    <tr className="text-left text-xs text-[var(--text-muted)]">
+                      <th className="pb-3 font-medium">Месяц</th>
+                      <th className="pb-3 text-right font-medium">Доход</th>
+                      <th className="pb-3 text-right font-medium">Расход</th>
+                      <th className="pb-3 text-right font-medium">Прибыль</th>
+                      <th className="pb-3 text-right font-medium">Маржа</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {chartData.map((row) => {
+                      const margin = row.income > 0 ? roundMoney((row.profit / row.income) * 100) : null;
+                      return <MonthlyTableRow key={row.month} label={row.fullName} income={row.income} expense={row.expense} profit={row.profit} margin={margin} />;
+                    })}
+                    <MonthlyTableRow label="Итого" income={tableTotals.income} expense={tableTotals.expense} profit={tableTotals.profit} margin={tableTotals.margin} total />
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <EmptyState text="Нет месяцев для сравнения." />
+            )
+          ) : (
+            <Skeleton className="h-56" />
+          )}
+        </SectionCard>
       </div>
+    </div>
+  );
+}
+
+function SectionCard({
+  title,
+  children,
+  className = "",
+}: {
+  title: string;
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <section className={`glass-card p-5 ${className}`}>
+      <div className="mb-4 flex items-center gap-2">
+        <BarChart3 size={16} className="text-[var(--accent-blue)]" />
+        <h2 className="text-base font-semibold">{title}</h2>
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function MetricCard({
+  title,
+  value,
+  icon,
+  tone,
+}: {
+  title: string;
+  value: string;
+  icon: React.ReactNode;
+  tone: "income" | "expense" | "neutral";
+}) {
+  const color = tone === "income" ? "var(--accent-green)" : tone === "expense" ? "var(--accent-red)" : "var(--accent-blue)";
+  return (
+    <div className="glass-card-sm p-4">
+      <div className="mb-3 flex items-center justify-between text-xs font-medium text-[var(--text-muted)]">
+        <span>{title}</span>
+        <span style={{ color }}>{icon}</span>
+      </div>
+      <div className="text-2xl font-bold tabular-nums tracking-tight" style={{ color }}>
+        {value}
+      </div>
+    </div>
+  );
+}
+
+function InfoCard({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="glass-card-sm p-4">
+      <div className="text-xs text-[var(--text-muted)]">{label}</div>
+      <div className="mt-2 text-lg font-semibold tabular-nums">{value}</div>
+    </div>
+  );
+}
+
+function CategoryList({ rows }: { rows: CategoryRow[] }) {
+  if (rows.length === 0) return <EmptyState text="Нет данных за выбранный период." />;
+  const max = Math.max(...rows.map((row) => row.total), 1);
+  return (
+    <div className="space-y-3">
+      {rows.map((row) => (
+        <div key={row.categoryId} className="space-y-1.5">
+          <div className="flex items-center justify-between gap-3 text-sm">
+            <div className="flex min-w-0 items-center gap-2">
+              <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: row.categoryColor }} />
+              <span className="truncate">{row.categoryName}</span>
+            </div>
+            <div className="flex shrink-0 items-center gap-3 tabular-nums">
+              <span className="font-semibold">{formatUsd(row.total)}</span>
+              <span className="w-12 text-right text-xs text-[var(--text-muted)]">{formatPercent(row.percentage)}</span>
+            </div>
+          </div>
+          <div className="h-1.5 overflow-hidden rounded-full bg-white/5">
+            <div className="h-full rounded-full" style={{ width: `${Math.max(4, (row.total / max) * 100)}%`, backgroundColor: row.categoryColor }} />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function MonthlyTableRow({
+  label,
+  income,
+  expense,
+  profit,
+  margin,
+  total = false,
+}: {
+  label: string;
+  income: number;
+  expense: number;
+  profit: number;
+  margin: number | null;
+  total?: boolean;
+}) {
+  return (
+    <tr className={`${total ? "border-t-2 bg-white/[0.03] font-semibold" : "border-t"} border-white/8`}>
+      <td className="py-3 pr-4">{label}</td>
+      <td className="py-3 text-right tabular-nums income-text">{formatUsd(income)}</td>
+      <td className="py-3 text-right tabular-nums expense-text">{formatUsd(expense)}</td>
+      <td className={`py-3 text-right tabular-nums ${profit >= 0 ? "income-text" : "expense-text"}`}>{formatUsd(profit)}</td>
+      <td className="py-3 text-right tabular-nums text-[var(--text-muted)]">{formatPercent(margin)}</td>
+    </tr>
+  );
+}
+
+function EmptyState({ text }: { text: string }) {
+  return (
+    <div className="flex min-h-[180px] items-center justify-center rounded-xl border border-dashed border-white/10 bg-white/[0.02] p-6 text-center text-sm text-[var(--text-muted)]">
+      {text}
     </div>
   );
 }

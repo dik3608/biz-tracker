@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { Prisma, TxType } from "@/generated/prisma/client";
+import { parseDateKey } from "@/lib/date-utils";
 
 export async function GET(req: NextRequest) {
   const url = req.nextUrl.searchParams;
@@ -79,6 +80,24 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  const category = await prisma.category.findUnique({ where: { id: categoryId } });
+  if (!category || category.type !== type) {
+    return NextResponse.json(
+      { error: "Категория не найдена или не соответствует типу операции" },
+      { status: 400 },
+    );
+  }
+
+  if (subcategoryId) {
+    const subcategory = await prisma.subcategory.findUnique({ where: { id: subcategoryId } });
+    if (!subcategory || subcategory.categoryId !== categoryId) {
+      return NextResponse.json(
+        { error: "Подкатегория не найдена или относится к другой категории" },
+        { status: 400 },
+      );
+    }
+  }
+
   const cur = currency === "EUR" ? "EUR" : "USD";
   const rate = cur === "EUR" && exchangeRate ? Number(exchangeRate) : 1;
   const amountUSD = cur === "EUR" ? amount * rate : amount;
@@ -93,7 +112,7 @@ export async function POST(req: NextRequest) {
       description,
       categoryId,
       subcategoryId: subcategoryId || null,
-      date: new Date(date),
+      date: parseDateKey(date),
       tags: tags ?? "",
     },
     include: { category: true, subcategory: true },

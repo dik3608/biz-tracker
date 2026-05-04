@@ -15,6 +15,7 @@ import {
   Eye,
   EyeOff,
 } from "lucide-react";
+import { DateRangePreset, getDateRangePreset } from "@/lib/date-utils";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -158,6 +159,17 @@ export default function SettingsPage() {
   const [exportTo, setExportTo] = useState("");
   const [exportType, setExportType] = useState<ExportType>("");
 
+  function applyExportPreset(preset: DateRangePreset) {
+    if (preset === "all_time") {
+      setExportFrom("");
+      setExportTo("");
+      return;
+    }
+    const range = getDateRangePreset(preset);
+    setExportFrom(range.from);
+    setExportTo(range.to);
+  }
+
   async function handleExport() {
     const params = new URLSearchParams();
     if (exportFrom) params.set("from", exportFrom);
@@ -269,7 +281,12 @@ export default function SettingsPage() {
 
   return (
     <div className="space-y-6 pb-8">
-      <h1 className="text-2xl font-bold tracking-tight">Настройки</h1>
+      <div>
+        <h1 className="text-2xl font-bold tracking-tight">Настройки</h1>
+        <p className="mt-1 text-sm text-[var(--text-muted)]">
+          Категории, подкатегории, экспорт и API-ключи в одном месте.
+        </p>
+      </div>
 
       {/* ===== Categories ===== */}
       <div className="glass-card p-5">
@@ -425,7 +442,29 @@ export default function SettingsPage() {
 
       {/* ===== Export ===== */}
       <div className="glass-card p-5">
-        <h2 className="mb-4 text-base font-semibold">Экспорт данных</h2>
+        <h2 className="mb-2 text-base font-semibold">Экспорт данных</h2>
+        <p className="mb-4 text-xs text-[var(--text-muted)]">
+          Экспорт не меняет данные: скачивается CSV по выбранным фильтрам.
+        </p>
+
+        <div className="mb-4 flex flex-wrap gap-2">
+          {(
+            [
+              ["current_month", "Этот месяц"],
+              ["previous_month", "Прошлый месяц"],
+              ["current_year", "Год"],
+              ["all_time", "Всё время"],
+            ] as const
+          ).map(([value, label]) => (
+            <button
+              key={value}
+              onClick={() => applyExportPreset(value)}
+              className="btn-ghost !px-3 !py-1.5 !text-xs"
+            >
+              {label}
+            </button>
+          ))}
+        </div>
 
         <div className="flex flex-wrap items-end gap-3">
           <label className="space-y-1">
