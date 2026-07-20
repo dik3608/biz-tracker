@@ -1,26 +1,65 @@
+/**
+ * Текстовый финансовый контекст для системного промпта AI-ассистента.
+ *
+ * Агрегаты считаются так же, как в основном API: Prisma aggregate по Decimal,
+ * Number() и round2 — только на выходе. Все даты — DateKey ("YYYY-MM-DD"),
+ * границы Prisma-запросов — через dateKeyToUtc.
+ */
 import { prisma } from "@/lib/prisma";
+import { TxType } from "@/generated/prisma/client";
+import {
+  addMonths,
+  dateKeyToUtc,
+  endOfMonthKey,
+  monthKeyOf,
+  startOfMonthKey,
+  todayKey,
+  utcDateToKey,
+  type DateKey,
+} from "@/lib/dates";
+import { round2 } from "@/lib/money";
 
-function startOfMonth(d: Date) {
-  return new Date(d.getFullYear(), d.getMonth(), 1);
-}
-function endOfMonth(d: Date) {
-  return new Date(d.getFullYear(), d.getMonth() + 1, 0, 23, 59, 59, 999);
+const MAX_OFFSET_MINUTES = 16 * 60;
+
+/**
+ * Смещение часового пояса клиента в минутах (семантика Date.getTimezoneOffset).
+ * Принимает число или строку из заголовка; мусор → null.
+ */
+export function parseTimezoneOffset(raw: unknown): number | null {
+  const n =
+    typeof raw === "number" ? raw : typeof raw === "string" && raw.trim() !== "" ? Number(raw) : NaN;
+  if (!Number.isFinite(n) || Math.abs(n) > MAX_OFFSET_MINUTES) return null;
+  return Math.trunc(n);
 }
 
-async function sumByType(from: Date, to: Date, type: "INCOME" | "EXPENSE") {
+/**
+ * «Сегодня» по календарю пользователя: UTC-время минус offset даёт локальные
+ * календарные компоненты (читаем их UTC-геттерами, чтобы не зависеть от
+ * часового пояса сервера). Без offset — календарь сервера.
+ */
+export function resolveTodayKey(offsetMinutes: number | null | undefined): DateKey {
+  if (offsetMinutes == null || !Number.isFinite(offsetMinutes)) return todayKey();
+  return utcDateToKey(new Date(Date.now() - offsetMinutes * 60_000));
+}
+
+async function sumByType(type: TxType, from?: DateKey, to?: DateKey): Promise<number> {
   const r = await prisma.transaction.aggregate({
-    where: { type, date: { gte: from, lte: to } },
+    where: {
+      type,
+      ...(from && to ? { date: { gte: dateKeyToUtc(from), lte: dateKeyToUtc(to) } } : {}),
+    },
     _sum: { amount: true },
   });
-  return Number(r._sum.amount ?? 0);
+  return round2(Number(r._sum.amount ?? 0));
 }
 
-export async function buildFinancialContext(): Promise<string> {
-  const now = new Date();
-  const curFrom = startOfMonth(now);
-  const curTo = endOfMonth(now);
-  const prevFrom = startOfMonth(new Date(now.getFullYear(), now.getMonth() - 1, 1));
-  const prevTo = endOfMonth(new Date(now.getFullYear(), now.getMonth() - 1, 1));
+const RECENT_TX_COUNT = 20;
+
+export async function buildFinancialContext(today: DateKey = todayKey()): Promise<string> {
+  const curFrom = startOfMonthKey(today);
+  const curTo = endOfMonthKey(today);
+  const prevFrom = addMonths(curFrom, -1);
+  const prevTo = endOfMonthKey(prevFrom);
 
   const [
     categories,
@@ -30,85 +69,82 @@ export async function buildFinancialContext(): Promise<string> {
     prevExpense,
     allTimeIncome,
     allTimeExpense,
-    transactions,
+    recentTx,
+    topExpenses,
   ] = await Promise.all([
-    prisma.category.findMany({ orderBy: [{ type: "asc" }, { sortOrder: "asc" }] }),
-    sumByType(curFrom, curTo, "INCOME"),
-    sumByType(curFrom, curTo, "EXPENSE"),
-    sumByType(prevFrom, prevTo, "INCOME"),
-    sumByType(prevFrom, prevTo, "EXPENSE"),
-    sumByType(new Date("2000-01-01"), new Date("2099-12-31"), "INCOME"),
-    sumByType(new Date("2000-01-01"), new Date("2099-12-31"), "EXPENSE"),
+    prisma.category.findMany({
+      include: { subcategories: { orderBy: { sortOrder: "asc" } } },
+      orderBy: [{ type: "asc" }, { sortOrder: "asc" }],
+    }),
+    sumByType("INCOME", curFrom, curTo),
+    sumByType("EXPENSE", curFrom, curTo),
+    sumByType("INCOME", prevFrom, prevTo),
+    sumByType("EXPENSE", prevFrom, prevTo),
+    sumByType("INCOME"),
+    sumByType("EXPENSE"),
     prisma.transaction.findMany({
-      where: { date: { gte: new Date(now.getFullYear(), now.getMonth() - 11, 1) } },
       include: { category: true, subcategory: true },
-      orderBy: { date: "desc" },
+      orderBy: [{ date: "desc" }, { createdAt: "desc" }],
+      take: RECENT_TX_COUNT,
+    }),
+    prisma.transaction.groupBy({
+      by: ["categoryId"],
+      where: { type: "EXPENSE", date: { gte: dateKeyToUtc(curFrom), lte: dateKeyToUtc(curTo) } },
+      _sum: { amount: true },
+      orderBy: { _sum: { amount: "desc" } },
+      take: 10,
     }),
   ]);
 
-  const topExpenses = await prisma.transaction.groupBy({
-    by: ["categoryId"],
-    where: { type: "EXPENSE", date: { gte: curFrom, lte: curTo } },
-    _sum: { amount: true },
-    orderBy: { _sum: { amount: "desc" } },
-    take: 10,
-  });
-
   const catMap = new Map(categories.map((c) => [c.id, c]));
+
+  const catLines = categories.map((c) => {
+    const subStr = c.subcategories.length
+      ? ` [подкатегории: ${c.subcategories.map((s) => `${s.name}(id:${s.id})`).join(", ")}]`
+      : "";
+    return `- ${c.name} (${c.type}, id:${c.id})${subStr}`;
+  });
 
   const topExpenseLines = topExpenses.map((t, i) => {
     const cat = catMap.get(t.categoryId);
-    return `${i + 1}. ${cat?.name ?? "?"}: $${Number(t._sum.amount).toFixed(2)}`;
+    const total = round2(Number(t._sum.amount ?? 0));
+    return `${i + 1}. ${cat?.name ?? "?"}: $${total.toFixed(2)}`;
   });
 
-  const txLines = transactions.map((t) => {
-    const d = t.date.toISOString().split("T")[0];
+  const txLines = recentTx.map((t) => {
+    const d = utcDateToKey(t.date);
     const sign = t.type === "INCOME" ? "+" : "-";
-    const cur = t.currency !== "USD" ? ` (${Number(t.originalAmount).toFixed(2)} ${t.currency})` : "";
+    const amount = round2(Number(t.amount));
+    const original = round2(Number(t.originalAmount));
+    const cur = t.currency !== "USD" ? ` (${original.toFixed(2)} ${t.currency})` : "";
     const sub = t.subcategory ? ` > ${t.subcategory.name}` : "";
-    return `[id:${t.id}] ${d} | ${t.type} | ${sign}$${Number(t.amount).toFixed(2)}${cur} | ${t.category.name}${sub} | ${t.description}`;
-  });
-
-  const allSubs = await prisma.subcategory.findMany({ include: { category: true } });
-  const subsByCategory = new Map<string, string[]>();
-  allSubs.forEach((s) => {
-    const arr = subsByCategory.get(s.categoryId) || [];
-    arr.push(s.name);
-    subsByCategory.set(s.categoryId, arr);
-  });
-
-  const catLines = categories.map((c) => {
-    const catSubs = allSubs.filter((s) => s.categoryId === c.id);
-    const subStr = catSubs.length
-      ? ` [подкатегории: ${catSubs.map((s) => `${s.name}(id:${s.id})`).join(", ")}]`
-      : "";
-    return `- ${c.name} (${c.type}, id:${c.id})${subStr}`;
+    return `[id:${t.id}] ${d} | ${t.type} | ${sign}$${amount.toFixed(2)}${cur} | ${t.category.name}${sub} | ${t.description}`;
   });
 
   return `=== ФИНАНСОВЫЕ ДАННЫЕ BIZTRACKER ===
 
 КАТЕГОРИИ:
-${catLines.join("\n")}
+${catLines.join("\n") || "Нет категорий"}
 
-ТЕКУЩИЙ МЕСЯЦ (${curFrom.toISOString().slice(0, 7)}):
+ТЕКУЩИЙ МЕСЯЦ (${monthKeyOf(curFrom)}):
 - Доход: $${curIncome.toFixed(2)}
 - Расход: $${curExpense.toFixed(2)}
-- Прибыль: $${(curIncome - curExpense).toFixed(2)}
+- Прибыль: $${round2(curIncome - curExpense).toFixed(2)}
 
-ПРОШЛЫЙ МЕСЯЦ (${prevFrom.toISOString().slice(0, 7)}):
+ПРОШЛЫЙ МЕСЯЦ (${monthKeyOf(prevFrom)}):
 - Доход: $${prevIncome.toFixed(2)}
 - Расход: $${prevExpense.toFixed(2)}
-- Прибыль: $${(prevIncome - prevExpense).toFixed(2)}
+- Прибыль: $${round2(prevIncome - prevExpense).toFixed(2)}
 
 ЗА ВСЁ ВРЕМЯ:
 - Общий доход: $${allTimeIncome.toFixed(2)}
 - Общий расход: $${allTimeExpense.toFixed(2)}
-- Общая прибыль: $${(allTimeIncome - allTimeExpense).toFixed(2)}
+- Общая прибыль: $${round2(allTimeIncome - allTimeExpense).toFixed(2)}
 
 ТОП РАСХОДОВ ЗА ТЕКУЩИЙ МЕСЯЦ:
 ${topExpenseLines.join("\n") || "Нет данных"}
 
-ВСЕ ТРАНЗАКЦИИ (последние 12 месяцев, ${transactions.length} шт):
+ПОСЛЕДНИЕ ОПЕРАЦИИ (${recentTx.length} шт):
 Дата | Тип | Сумма | Категория | Описание
 ${txLines.join("\n") || "Нет транзакций"}`;
 }

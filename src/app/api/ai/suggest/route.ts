@@ -1,16 +1,32 @@
 import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import { prisma } from "@/lib/prisma";
+import { jsonError, parseBody, requireSession, txTypeSchema } from "@/lib/api-server";
 
+const MODEL = "gpt-5.4";
+const OPENAI_TIMEOUT_MS = 15_000;
+
+const suggestBodySchema = z.object({
+  description: z.string().trim().min(1, "description обязателен").max(500),
+  type: txTypeSchema.optional(),
+});
+
+/**
+ * POST /api/ai/suggest — подсказка категории/подкатегории по описанию.
+ * Ответ: {categoryId, categoryName, subcategoryId, subcategoryName, newSubcategory, type}.
+ */
 export async function POST(req: NextRequest) {
-  const apiKey = req.headers.get("x-openai-key");
+  const denied = await requireSession(req);
+  if (denied) return denied;
+
+  const apiKey = req.headers.get("x-openai-key") || process.env.OPENAI_API_KEY;
   if (!apiKey) {
-    return NextResponse.json({ error: "API-ключ не указан" }, { status: 401 });
+    return jsonError("API-ключ не указан", 401);
   }
 
-  const { description, type } = await req.json();
-  if (!description?.trim()) {
-    return NextResponse.json({ error: "description обязателен" }, { status: 400 });
-  }
+  const { data, error } = await parseBody(req, suggestBodySchema);
+  if (error) return error;
+  const { description, type } = data;
 
   const categories = await prisma.category.findMany({
     where: type ? { type } : undefined,
@@ -31,7 +47,7 @@ export async function POST(req: NextRequest) {
 ${type ? `Тип: ${type}` : ""}
 
 Доступные категории:
-${catList.join("\n")}
+${catList.join("\n") || "Пока нет категорий"}
 
 Доступные подкатегории:
 ${subList.join("\n") || "Пока нет подкатегорий"}
@@ -50,7 +66,7 @@ ${subList.join("\n") || "Пока нет подкатегорий"}
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "gpt-5.4",
+        model: MODEL,
         messages: [
           { role: "system", content: "Ты — умный финансовый помощник. Отвечай только JSON." },
           { role: "user", content: prompt },
@@ -58,23 +74,24 @@ ${subList.join("\n") || "Пока нет подкатегорий"}
         temperature: 0.1,
         max_completion_tokens: 200,
       }),
+      signal: AbortSignal.timeout(OPENAI_TIMEOUT_MS),
     });
 
     if (!res.ok) {
-      return NextResponse.json({ error: "OpenAI ошибка" }, { status: res.status });
+      return jsonError("OpenAI ошибка", res.status);
     }
 
-    const data = await res.json();
-    const text = data.choices?.[0]?.message?.content?.trim() || "";
+    const completion = await res.json();
+    const text: string = completion.choices?.[0]?.message?.content?.trim() || "";
 
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
-      return NextResponse.json({ error: "Не удалось распарсить" }, { status: 500 });
+      return jsonError("Не удалось распарсить", 500);
     }
 
     const suggestion = JSON.parse(jsonMatch[0]);
     return NextResponse.json(suggestion);
   } catch {
-    return NextResponse.json({ error: "Ошибка запроса" }, { status: 500 });
+    return jsonError("Ошибка запроса", 500);
   }
 }

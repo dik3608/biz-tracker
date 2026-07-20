@@ -1,10 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import { prisma } from "@/lib/prisma";
+import { jsonError, parseBody, requireSession } from "@/lib/api-server";
 
-export async function GET(
-  _req: NextRequest,
-  { params }: { params: Promise<{ id: string }> },
-) {
+/** GET /api/ai/sessions/:id → сессия с сообщениями (по возрастанию времени). */
+export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const denied = await requireSession(req);
+  if (denied) return denied;
+
   const { id } = await params;
 
   const session = await prisma.chatSession.findUnique({
@@ -15,34 +18,50 @@ export async function GET(
   });
 
   if (!session) {
-    return NextResponse.json({ error: "Чат не найден" }, { status: 404 });
+    return jsonError("Чат не найден", 404);
   }
 
   return NextResponse.json(session);
 }
 
-export async function PATCH(
-  req: NextRequest,
-  { params }: { params: Promise<{ id: string }> },
-) {
+const patchSessionSchema = z.object({
+  title: z.string().trim().min(1, "Название не может быть пустым").max(200),
+});
+
+/** PATCH /api/ai/sessions/:id {title} → обновлённая сессия. */
+export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const denied = await requireSession(req);
+  if (denied) return denied;
+
   const { id } = await params;
-  const body = await req.json();
+
+  const { data, error } = await parseBody(req, patchSessionSchema);
+  if (error) return error;
+
+  const exists = await prisma.chatSession.findUnique({ where: { id } });
+  if (!exists) {
+    return jsonError("Чат не найден", 404);
+  }
 
   const session = await prisma.chatSession.update({
     where: { id },
-    data: { title: body.title },
+    data: { title: data.title },
   });
 
   return NextResponse.json(session);
 }
 
-export async function DELETE(
-  _req: NextRequest,
-  { params }: { params: Promise<{ id: string }> },
-) {
+/** DELETE /api/ai/sessions/:id → {ok:true}; сообщения удаляются каскадом. */
+export async function DELETE(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const denied = await requireSession(req);
+  if (denied) return denied;
+
   const { id } = await params;
 
-  await prisma.chatSession.delete({ where: { id } });
+  const { count } = await prisma.chatSession.deleteMany({ where: { id } });
+  if (count === 0) {
+    return jsonError("Чат не найден", 404);
+  }
 
   return NextResponse.json({ ok: true });
 }

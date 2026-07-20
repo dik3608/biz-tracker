@@ -1,32 +1,55 @@
 import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import { prisma } from "@/lib/prisma";
+import { jsonError, parseBody, requireSession } from "@/lib/api-server";
+
+const createSubcategorySchema = z.object({
+  name: z.string().trim().min(1, "Название обязательно").max(80),
+  categoryId: z.string().min(1),
+});
 
 export async function GET(req: NextRequest) {
+  const denied = await requireSession(req);
+  if (denied) return denied;
+
   const categoryId = req.nextUrl.searchParams.get("categoryId");
-  const where = categoryId ? { categoryId } : {};
-
   const subcategories = await prisma.subcategory.findMany({
-    where,
-    include: { category: true },
-    orderBy: [{ categoryId: "asc" }, { sortOrder: "asc" }, { name: "asc" }],
+    where: categoryId ? { categoryId } : {},
+    orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
   });
-
   return NextResponse.json({ subcategories });
 }
 
 export async function POST(req: NextRequest) {
-  const { name, categoryId } = await req.json();
-  if (!name?.trim() || !categoryId) {
-    return NextResponse.json({ error: "name и categoryId обязательны" }, { status: 400 });
-  }
+  const denied = await requireSession(req);
+  if (denied) return denied;
+
+  const { data, error } = await parseBody(req, createSubcategorySchema);
+  if (error) return error;
+
+  const category = await prisma.category.findUnique({ where: { id: data.categoryId } });
+  if (!category) return jsonError("Категория не найдена", 400);
+
+  const duplicate = await prisma.subcategory.findFirst({
+    where: { categoryId: data.categoryId, name: { equals: data.name, mode: "insensitive" } },
+  });
+  if (duplicate) return jsonError("Такая подкатегория уже есть", 409);
+
+  const maxOrder = await prisma.subcategory.aggregate({
+    where: { categoryId: data.categoryId },
+    _max: { sortOrder: true },
+  });
 
   try {
-    const sub = await prisma.subcategory.create({
-      data: { name: name.trim(), categoryId },
-      include: { category: true },
+    const subcategory = await prisma.subcategory.create({
+      data: {
+        name: data.name,
+        categoryId: data.categoryId,
+        sortOrder: (maxOrder._max.sortOrder ?? 0) + 1,
+      },
     });
-    return NextResponse.json(sub, { status: 201 });
+    return NextResponse.json(subcategory, { status: 201 });
   } catch {
-    return NextResponse.json({ error: "Подкатегория уже существует" }, { status: 409 });
+    return jsonError("Такая подкатегория уже есть", 409);
   }
 }

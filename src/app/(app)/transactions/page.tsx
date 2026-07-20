@@ -1,778 +1,718 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  Search,
-  X,
-  ChevronLeft,
-  ChevronRight,
-  CheckSquare,
-  Trash2,
-  Loader2,
-  Sparkles,
-} from "lucide-react";
-import { formatLocalDateKey, todayLocalDateKey } from "@/lib/date-utils";
+import { useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
+import clsx from "clsx";
+import { ArrowDown, ArrowUp, Pencil, Plus, Search, Trash2, X } from "lucide-react";
+import { apiDelete, apiGet, apiPost, apiPut } from "@/lib/api-client";
+import { formatDay, todayKey } from "@/lib/dates";
+import { formatSigned, type Currency } from "@/lib/money";
+import type {
+  CategoryDto,
+  TransactionDto,
+  TransactionInput,
+  TransactionListResponse,
+  TxType,
+} from "@/lib/types";
+import { Button, IconButton } from "@/components/ui/Button";
+import { Card } from "@/components/ui/Card";
+import { Input } from "@/components/ui/Input";
+import { ConfirmDialog, Modal } from "@/components/ui/Modal";
+import { Pagination } from "@/components/ui/Pagination";
+import { defaultPeriod, PeriodPicker, usePeriod } from "@/components/ui/PeriodPicker";
+import { SegmentedControl } from "@/components/ui/SegmentedControl";
+import { Select } from "@/components/ui/Select";
+import { errorMessage, useToast } from "@/components/ui/Toast";
+import { CategoryBadge, EmptyState, Skeleton, TxAmount } from "@/components/ui/misc";
+import { TransactionForm } from "@/components/TransactionForm";
 
-type Category = {
-  id: string;
-  name: string;
-  type: "INCOME" | "EXPENSE";
-  color: string;
-  slug: string;
-};
+type TypeFilter = "all" | TxType;
+type CurrencyFilter = "all" | Currency;
+type SortCol = "date" | "amount";
+type SortDir = "asc" | "desc";
 
-type Subcategory = {
-  id: string;
-  name: string;
-  categoryId: string;
-};
-
-type Transaction = {
-  id: string;
-  type: "INCOME" | "EXPENSE";
-  amount: number;
-  originalAmount: number;
-  currency: string;
-  exchangeRate: number;
-  description: string;
-  date: string;
-  tags: string;
-  category: { id: string; name: string; color: string };
-  subcategory?: { id: string; name: string } | null;
-};
-
-type Filters = {
-  type: "" | "INCOME" | "EXPENSE";
-  categoryId: string;
-  from: string;
-  to: string;
-  search: string;
-};
-
-const fmtUSD = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
-const fmtEUR = new Intl.NumberFormat("de-DE", { style: "currency", currency: "EUR" });
-function fmtAmt(tx: Transaction) {
-  const a = tx.originalAmount || tx.amount;
-  const c = tx.currency || "USD";
-  return c === "EUR" ? fmtEUR.format(a) : fmtUSD.format(a);
+/** «1 операцию / 2 операции / 5 операций» — для подтверждений удаления. */
+function pluralOps(n: number, one: string, few: string, many: string): string {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return one;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return few;
+  return many;
 }
 
-function fmtDate(iso: string) {
-  const d = new Date(iso);
-  return `${String(d.getUTCDate()).padStart(2, "0")}.${String(d.getUTCMonth() + 1).padStart(2, "0")}.${d.getUTCFullYear()}`;
+function SortHeader({
+  label,
+  active,
+  dir,
+  onClick,
+  alignRight,
+}: {
+  label: string;
+  active: boolean;
+  dir: SortDir;
+  onClick: () => void;
+  alignRight?: boolean;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={clsx(
+        "inline-flex items-center gap-1 font-medium transition-colors hover:text-ink",
+        active ? "text-ink" : "text-ink-3",
+        alignRight && "justify-end",
+      )}
+    >
+      {label}
+      {active ? (dir === "asc" ? <ArrowUp size={12} /> : <ArrowDown size={12} />) : null}
+    </button>
+  );
 }
 
-function toInputDate(iso: string) {
-  return iso.slice(0, 10);
-}
-
-/* ── date preset helpers ── */
-function startOfMonth(d: Date) {
-  return new Date(d.getFullYear(), d.getMonth(), 1);
-}
-
-function presetRange(key: string): { from: string; to: string } {
-  const now = new Date();
-  const fmt = (d: Date) => formatLocalDateKey(d);
-  switch (key) {
-    case "month":
-      return { from: fmt(startOfMonth(now)), to: todayLocalDateKey() };
-    case "prev_month": {
-      const s = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-      const e = new Date(now.getFullYear(), now.getMonth(), 0);
-      return { from: fmt(s), to: fmt(e) };
-    }
-    case "quarter": {
-      const qm = Math.floor(now.getMonth() / 3) * 3;
-      return {
-        from: fmt(new Date(now.getFullYear(), qm, 1)),
-        to: fmt(now),
-      };
-    }
-    case "year":
-      return { from: fmt(new Date(now.getFullYear(), 0, 1)), to: todayLocalDateKey() };
-    default:
-      return { from: "", to: "" };
-  }
-}
-
-/* ================================================================ */
+const checkboxClasses = "h-4 w-4 shrink-0 cursor-pointer accent-accent";
 
 export default function TransactionsPage() {
-  /* ── categories ── */
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [subcategories, setSubcategories] = useState<Subcategory[]>([]);
-  const [eurRate, setEurRate] = useState(1.08);
+  const { toast } = useToast();
+  const today = todayKey();
 
+  // ---------- Фильтры ----------
+  const [searchInput, setSearchInput] = useState("");
+  const [search, setSearch] = useState("");
+  const [type, setType] = useState<TypeFilter>("all");
+  const [categoryId, setCategoryId] = useState("");
+  const [subcategoryId, setSubcategoryId] = useState("");
+  const [currency, setCurrency] = useState<CurrencyFilter>("all");
+  const [period, setPeriod] = usePeriod("tx-period");
+
+  // ---------- Сортировка и пагинация ----------
+  const [sort, setSort] = useState<SortCol>("date");
+  const [dir, setDir] = useState<SortDir>("desc");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
+
+  // Дебаунс поиска: 300 мс
   useEffect(() => {
-    fetch("/api/categories")
-      .then((r) => r.json())
-      .then((d) => setCategories(d.categories ?? []));
-    fetch("/api/subcategories")
-      .then((r) => r.json())
-      .then((d) => setSubcategories(d.subcategories ?? []));
-    fetch("/api/exchange-rate")
-      .then((r) => r.json())
-      .then((d) => setEurRate(d.rate ?? 1.08))
-      .catch(() => {});
+    const handle = setTimeout(() => setSearch(searchInput.trim()), 300);
+    return () => clearTimeout(handle);
+  }, [searchInput]);
+  useEffect(() => {
+    setPage(1);
+  }, [search]);
+
+  // ---------- Справочник категорий ----------
+  const [categories, setCategories] = useState<CategoryDto[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    apiGet<{ categories: CategoryDto[] }>("/api/categories")
+      .then((d) => {
+        if (!cancelled) setCategories(d.categories);
+      })
+      .catch(() => {
+        // фильтр по категориям деградирует молча — список операций важнее
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  /* ── filters ── */
-  const emptyFilters: Filters = {
-    type: "",
-    categoryId: "",
-    from: "",
-    to: "",
-    search: "",
-  };
-  const [filters, setFilters] = useState<Filters>(emptyFilters);
-  const [page, setPage] = useState(1);
-  const limit = 30;
-
-  const patch = (p: Partial<Filters>) => {
-    setFilters((prev) => ({ ...prev, ...p }));
-    setPage(1);
-  };
-
-  const filteredCategories = useMemo(
-    () =>
-      filters.type
-        ? categories.filter((c) => c.type === filters.type)
-        : categories,
-    [categories, filters.type],
+  const incomeCategories = useMemo(() => categories.filter((c) => c.type === "INCOME"), [categories]);
+  const expenseCategories = useMemo(() => categories.filter((c) => c.type === "EXPENSE"), [categories]);
+  const selectedCategory = useMemo(
+    () => categories.find((c) => c.id === categoryId) ?? null,
+    [categories, categoryId],
   );
 
-  /* ── fetch transactions ── */
-  const [rows, setRows] = useState<Transaction[]>([]);
+  // ---------- Данные списка ----------
+  const [items, setItems] = useState<TransactionDto[] | null>(null);
+  const [totals, setTotals] = useState<TransactionListResponse["totals"] | null>(null);
   const [total, setTotal] = useState(0);
   const [totalPages, setTotalPages] = useState(1);
-  const [loading, setLoading] = useState(false);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    const qs = new URLSearchParams();
-    if (filters.type) qs.set("type", filters.type);
-    if (filters.categoryId) qs.set("categoryId", filters.categoryId);
-    if (filters.from) qs.set("from", filters.from);
-    if (filters.to) qs.set("to", filters.to);
-    if (filters.search) qs.set("search", filters.search);
-    qs.set("page", String(page));
-    qs.set("limit", String(limit));
-
-    try {
-      const r = await fetch(`/api/transactions?${qs}`);
-      const d = await r.json();
-      setRows(d.transactions ?? []);
-      setTotal(d.total ?? 0);
-      setTotalPages(d.totalPages ?? 1);
-    } finally {
-      setLoading(false);
-    }
-  }, [filters, page]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [reloadTick, setReloadTick] = useState(0);
+  const requestSeq = useRef(0);
 
   useEffect(() => {
-    load();
-  }, [load]);
+    const requestId = ++requestSeq.current;
+    setLoading(true);
+    setLoadError(null);
+    (async () => {
+      try {
+        const data = await apiGet<TransactionListResponse>("/api/transactions", {
+          from: period.range?.from,
+          to: period.range?.to,
+          type: type === "all" ? undefined : type,
+          categoryId: categoryId || undefined,
+          subcategoryId: subcategoryId || undefined,
+          currency: currency === "all" ? undefined : currency,
+          search: search || undefined,
+          page,
+          pageSize,
+          sort,
+          dir,
+        });
+        if (requestId !== requestSeq.current) return;
+        setItems(data.transactions);
+        setTotals(data.totals);
+        setTotal(data.total);
+        setTotalPages(data.totalPages);
+        setLoading(false);
+      } catch (e) {
+        if (requestId !== requestSeq.current) return;
+        setLoadError(errorMessage(e));
+        setLoading(false);
+      }
+    })();
+  }, [period, type, categoryId, subcategoryId, currency, search, page, pageSize, sort, dir, reloadTick]);
 
-  /* ── selection mode ── */
-  const [selectMode, setSelectMode] = useState(false);
+  const refresh = () => setReloadTick((t) => t + 1);
+
+  // ---------- Выделение (сбрасывается при смене фильтров/страницы/сортировки) ----------
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [showBulkConfirm, setShowBulkConfirm] = useState(false);
+  useEffect(() => {
+    setSelected(new Set());
+  }, [period, type, categoryId, subcategoryId, currency, search, page, pageSize, sort, dir]);
 
   const toggleSelect = (id: string) =>
     setSelected((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-      }
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
       return next;
     });
 
+  const allOnPageSelected = !!items && items.length > 0 && items.every((t) => selected.has(t.id));
   const toggleSelectAll = () => {
-    if (selected.size === rows.length) {
-      setSelected(new Set());
+    if (!items) return;
+    setSelected(allOnPageSelected ? new Set() : new Set(items.map((t) => t.id)));
+  };
+
+  // ---------- Обработчики фильтров ----------
+  const onTypeChange = (t: TypeFilter) => {
+    setType(t);
+    setPage(1);
+    if (t !== "all" && selectedCategory && selectedCategory.type !== t) {
+      setCategoryId("");
+      setSubcategoryId("");
+    }
+  };
+
+  const onCategoryChange = (id: string) => {
+    setCategoryId(id);
+    setSubcategoryId("");
+    setPage(1);
+    if (id) {
+      const cat = categories.find((c) => c.id === id);
+      // Категория «неверного» типа приводит фильтр типа в соответствие
+      if (cat && type !== "all" && cat.type !== type) setType(cat.type);
+    }
+  };
+
+  const resetFilters = () => {
+    setSearchInput("");
+    setSearch("");
+    setType("all");
+    setCategoryId("");
+    setSubcategoryId("");
+    setCurrency("all");
+    setPeriod(defaultPeriod());
+    setPage(1);
+  };
+
+  const def = defaultPeriod();
+  const periodActive =
+    period.preset !== def.preset || JSON.stringify(period.range) !== JSON.stringify(def.range);
+  const hasActiveFilters =
+    searchInput.trim() !== "" ||
+    type !== "all" ||
+    categoryId !== "" ||
+    subcategoryId !== "" ||
+    currency !== "all" ||
+    periodActive;
+
+  // ---------- Сортировка ----------
+  const toggleSort = (col: SortCol) => {
+    setPage(1);
+    if (sort === col) {
+      setDir((d) => (d === "asc" ? "desc" : "asc"));
     } else {
-      setSelected(new Set(rows.map((r) => r.id)));
+      setSort(col);
+      setDir("desc");
     }
   };
 
-  const bulkDelete = async () => {
-    await fetch("/api/transactions/bulk-delete", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ids: [...selected] }),
-    });
-    setSelected(new Set());
-    setSelectMode(false);
-    setShowBulkConfirm(false);
-    load();
+  // ---------- Удаление ----------
+  const [deleteTarget, setDeleteTarget] = useState<TransactionDto | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [bulkConfirmOpen, setBulkConfirmOpen] = useState(false);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+
+  /** После удаления: если страница опустела — на предыдущую, иначе перезагрузка. */
+  const afterRemoval = (removedIds: string[]) => {
+    const removed = new Set(removedIds);
+    const remaining = (items ?? []).filter((t) => !removed.has(t.id)).length;
+    if (remaining === 0 && page > 1) setPage((p) => p - 1);
+    else refresh();
   };
 
-  /* ── edit modal ── */
-  const [editing, setEditing] = useState<Transaction | null>(null);
-  const [editForm, setEditForm] = useState({
-    type: "" as "INCOME" | "EXPENSE",
-    amount: "",
-    categoryId: "",
-    subcategoryId: "",
-    description: "",
-    date: "",
-    tags: "",
-    currency: "USD" as "USD" | "EUR",
-    exchangeRate: 1,
-  });
-  const [saving, setSaving] = useState(false);
-  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
-
-  const openEdit = (tx: Transaction) => {
-    setEditing(tx);
-    setEditForm({
-      type: tx.type,
-      amount: String(tx.originalAmount || tx.amount),
-      categoryId: tx.category.id,
-      subcategoryId: tx.subcategory?.id ?? "",
-      description: tx.description,
-      date: toInputDate(tx.date),
-      tags: tx.tags ?? "",
-      currency: (tx.currency as "USD" | "EUR") || "USD",
-      exchangeRate: tx.exchangeRate || 1,
-    });
-    setShowDeleteConfirm(false);
-  };
-
-  const editCategories = useMemo(
-    () => categories.filter((c) => c.type === editForm.type),
-    [categories, editForm.type],
-  );
-  const editSubcategories = useMemo(
-    () => subcategories.filter((s) => s.categoryId === editForm.categoryId),
-    [editForm.categoryId, subcategories],
-  );
-
-  const saveEdit = async () => {
-    if (!editing) return;
-    setSaving(true);
+  const confirmDeleteOne = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
     try {
-      await fetch(`/api/transactions/${editing.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          type: editForm.type,
-          amount: Number(editForm.amount),
-          categoryId: editForm.categoryId,
-          subcategoryId: editForm.subcategoryId || null,
-          description: editForm.description,
-          date: editForm.date,
-          tags: editForm.tags,
-          currency: editForm.currency,
-          exchangeRate: editForm.currency === "EUR" ? editForm.exchangeRate : 1,
-        }),
-      });
-      setEditing(null);
-      load();
+      await apiDelete<{ ok: boolean }>(`/api/transactions/${deleteTarget.id}`);
+      toast("Операция удалена");
+      const removedId = deleteTarget.id;
+      setDeleteTarget(null);
+      afterRemoval([removedId]);
+    } catch (e) {
+      toast(errorMessage(e), "error");
     } finally {
-      setSaving(false);
+      setDeleting(false);
     }
   };
 
-  const deleteOne = async () => {
-    if (!editing) return;
-    await fetch(`/api/transactions/${editing.id}`, { method: "DELETE" });
-    setEditing(null);
-    load();
+  const confirmBulkDelete = async () => {
+    const ids = [...selected];
+    if (ids.length === 0) return;
+    setBulkDeleting(true);
+    try {
+      const res = await apiPost<{ ok: boolean; deleted: number }>("/api/transactions/bulk-delete", {
+        ids,
+      });
+      toast(`Удалено: ${res.deleted} ${pluralOps(res.deleted, "операция", "операции", "операций")}`);
+      setBulkConfirmOpen(false);
+      setSelected(new Set());
+      afterRemoval(ids);
+    } catch (e) {
+      toast(errorMessage(e), "error");
+    } finally {
+      setBulkDeleting(false);
+    }
   };
 
-  /* ================================================================ */
+  // ---------- Редактирование ----------
+  const [editing, setEditing] = useState<TransactionDto | null>(null);
+
+  const submitEdit = async (input: TransactionInput) => {
+    if (!editing) return;
+    try {
+      await apiPut<TransactionDto>(`/api/transactions/${editing.id}`, input);
+      toast("Сохранено");
+      setEditing(null);
+      refresh();
+    } catch (e) {
+      toast(errorMessage(e), "error");
+      throw e;
+    }
+  };
+
+  // ---------- Ячейки, общие для таблицы и карточек ----------
+  const rowActions = (tx: TransactionDto) => (
+    <div className="flex items-center justify-end gap-1">
+      <IconButton aria-label="Редактировать" onClick={() => setEditing(tx)}>
+        <Pencil size={14} />
+      </IconButton>
+      <IconButton danger aria-label="Удалить" onClick={() => setDeleteTarget(tx)}>
+        <Trash2 size={14} />
+      </IconButton>
+    </div>
+  );
+
+  const tagChips = (tags: string[]) =>
+    tags.length > 0 ? (
+      <span className="inline-flex flex-wrap gap-1">
+        {tags.map((tag) => (
+          <span
+            key={tag}
+            className="rounded-full border border-edge bg-surface-2 px-1.5 py-px text-[11px] text-ink-3"
+          >
+            {tag}
+          </span>
+        ))}
+      </span>
+    ) : null;
 
   return (
-    <div className="space-y-4">
-      <div>
-        <div className="premium-kicker mb-2 flex items-center gap-2">
-          <Sparkles className="h-3.5 w-3.5" />
-          Ledger control
-        </div>
-        <h1 className="text-3xl font-black tracking-tight md:text-4xl">Записи</h1>
-        <p className="mt-1 text-sm text-[var(--text-muted)]">
-          Фильтруйте, проверяйте и аккуратно редактируйте финансовые операции.
-        </p>
+    <div className="flex flex-col gap-4">
+      {/* Шапка */}
+      <div className="flex items-center justify-between gap-3">
+        <h1 className="text-[22px] font-bold tracking-tight">Операции</h1>
+        <Link href="/add">
+          <Button variant="primary" icon={<Plus size={15} />}>
+            Добавить
+          </Button>
+        </Link>
       </div>
 
-      {/* ── Filter bar ── */}
-      <div className="glass-card-sm flex flex-wrap items-center gap-2 p-3">
-        {/* type pills */}
-        {(
-          [
-            ["", "Все"],
-            ["INCOME", "Доходы"],
-            ["EXPENSE", "Расходы"],
-          ] as const
-        ).map(([val, label]) => (
-          <button
-            key={val}
-            onClick={() => patch({ type: val, categoryId: "" })}
-            className={`rounded-full px-3 py-1 text-sm font-medium transition ${
-              filters.type === val
-                ? val === "INCOME"
-                  ? "bg-emerald-600/30 text-emerald-300"
-                  : val === "EXPENSE"
-                    ? "bg-rose-600/30 text-rose-300"
-                    : "bg-indigo-600/30 text-indigo-300"
-                : "text-[var(--text-muted)] hover:bg-white/5"
-            }`}
-          >
-            {label}
-          </button>
-        ))}
-
-        {/* category dropdown */}
-        <select
-          value={filters.categoryId}
-          onChange={(e) => patch({ categoryId: e.target.value })}
-          className="!w-auto min-w-[120px]"
-        >
-          <option value="">Категория</option>
-          {filteredCategories.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.name}
-            </option>
-          ))}
-        </select>
-
-        {/* date range */}
-        <input
-          type="date"
-          value={filters.from}
-          onChange={(e) => patch({ from: e.target.value })}
-          className="!w-auto"
-        />
-        <span className="text-[var(--text-muted)]">—</span>
-        <input
-          type="date"
-          value={filters.to}
-          onChange={(e) => patch({ to: e.target.value })}
-          className="!w-auto"
-        />
-
-        {/* quick presets */}
-        {(
-          [
-            ["month", "Месяц"],
-            ["prev_month", "Пр. месяц"],
-            ["quarter", "Квартал"],
-            ["year", "Год"],
-          ] as const
-        ).map(([key, label]) => (
-          <button
-            key={key}
-            onClick={() => patch(presetRange(key))}
-            className="btn-ghost !px-2 !py-1 !text-xs"
-          >
-            {label}
-          </button>
-        ))}
-
-        {/* search */}
-        <div className="relative ml-auto min-w-[160px]">
+      {/* Фильтры */}
+      <Card className="flex flex-wrap items-center gap-2 px-4 py-3">
+        <div className="relative w-full sm:w-56">
           <Search
             size={14}
-            className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)]"
+            className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink-3"
           />
-          <input
-            placeholder="Поиск…"
-            value={filters.search}
-            onChange={(e) => patch({ search: e.target.value })}
-            className="!w-full !pl-8"
+          <Input
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            placeholder="Поиск по описанию и тегам"
+            className="pl-8"
+            aria-label="Поиск"
           />
         </div>
 
-        {/* reset */}
-        <button
-          onClick={() => {
-            setFilters(emptyFilters);
-            setPage(1);
-          }}
-          className="btn-ghost flex items-center gap-1 !px-2 !py-1 !text-xs"
+        <SegmentedControl<TypeFilter>
+          options={[
+            { value: "all", label: "Все" },
+            { value: "INCOME", label: "Доход", tone: "income" },
+            { value: "EXPENSE", label: "Расход", tone: "expense" },
+          ]}
+          value={type}
+          onChange={onTypeChange}
+        />
+
+        <Select
+          value={categoryId}
+          onChange={(e) => onCategoryChange(e.target.value)}
+          className="w-44"
+          aria-label="Категория"
         >
-          <X size={12} /> Сбросить
-        </button>
-      </div>
-
-      {/* ── Action bar ── */}
-      <div className="flex items-center gap-3">
-        <button
-          onClick={() => {
-            setSelectMode((v) => !v);
-            setSelected(new Set());
-          }}
-          className={`btn-ghost flex items-center gap-1 ${selectMode ? "!border-indigo-500 !text-indigo-400" : ""}`}
-        >
-          <CheckSquare size={14} />
-          {selectMode ? "Отмена" : "Выбрать"}
-        </button>
-
-        {selectMode && selected.size > 0 && (
-          <button
-            onClick={() => setShowBulkConfirm(true)}
-            className="flex items-center gap-1 rounded-lg bg-rose-600/20 px-3 py-1.5 text-sm font-medium text-rose-400 transition hover:bg-rose-600/30"
-          >
-            <Trash2 size={14} /> Удалить выбранные ({selected.size})
-          </button>
-        )}
-
-        <span className="ml-auto text-xs text-[var(--text-muted)]">
-          Всего: {total}
-        </span>
-      </div>
-
-      {/* ── Table / list ── */}
-      {loading ? (
-        <div className="flex justify-center py-12">
-          <Loader2 size={24} className="animate-spin text-[var(--text-muted)]" />
-        </div>
-      ) : rows.length === 0 ? (
-        <p className="py-12 text-center text-[var(--text-muted)]">
-          Транзакций не найдено
-        </p>
-      ) : (
-        <>
-          {/* desktop table */}
-          <div className="glass-card hidden overflow-hidden md:block">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-white/5 text-left text-xs text-[var(--text-muted)]">
-                  {selectMode && (
-                    <th className="p-3 w-10">
-                      <input
-                        type="checkbox"
-                        checked={selected.size === rows.length && rows.length > 0}
-                        onChange={toggleSelectAll}
-                        className="!w-4 accent-indigo-500"
-                      />
-                    </th>
-                  )}
-                  <th className="p-3">Дата</th>
-                  <th className="p-3">Описание</th>
-                  <th className="p-3">Категория</th>
-                  <th className="p-3 text-right">Сумма</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((tx) => (
-                  <tr
-                    key={tx.id}
-                    onClick={() => !selectMode && openEdit(tx)}
-                    className="cursor-pointer border-b border-white/5 transition hover:bg-white/[0.03]"
-                  >
-                    {selectMode && (
-                      <td className="p-3" onClick={(e) => e.stopPropagation()}>
-                        <input
-                          type="checkbox"
-                          checked={selected.has(tx.id)}
-                          onChange={() => toggleSelect(tx.id)}
-                          className="!w-4 accent-indigo-500"
-                        />
-                      </td>
-                    )}
-                    <td className="whitespace-nowrap p-3 text-[var(--text-muted)]">
-                      {fmtDate(tx.date)}
-                    </td>
-                    <td className="max-w-[260px] truncate p-3">{tx.description}</td>
-                    <td className="p-3">
-                      <span className="flex items-center gap-1.5">
-                        <span
-                          className="inline-block h-2.5 w-2.5 rounded-full"
-                          style={{ background: tx.category.color }}
-                        />
-                        <span>
-                          {tx.category.name}
-                          {tx.subcategory && (
-                            <span className="ml-1 text-xs text-[var(--text-muted)]">
-                              / {tx.subcategory.name}
-                            </span>
-                          )}
-                        </span>
-                      </span>
-                    </td>
-                    <td
-                      className={`whitespace-nowrap p-3 text-right font-medium ${
-                        tx.type === "INCOME" ? "income-text" : "expense-text"
-                      }`}
-                    >
-                      {tx.type === "EXPENSE" ? "−\u00A0" : "+\u00A0"}
-                      {fmtAmt(tx)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          {/* mobile cards */}
-          <div className="space-y-2 md:hidden">
-            {rows.map((tx) => (
-              <div
-                key={tx.id}
-                onClick={() => !selectMode && openEdit(tx)}
-                className="glass-card-sm flex cursor-pointer items-center gap-3 p-3"
-              >
-                {selectMode && (
-                  <input
-                    type="checkbox"
-                    checked={selected.has(tx.id)}
-                    onChange={(e) => {
-                      e.stopPropagation();
-                      toggleSelect(tx.id);
-                    }}
-                    className="!w-4 shrink-0 accent-indigo-500"
-                  />
-                )}
-                <span
-                  className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
-                  style={{ background: tx.category.color }}
-                />
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm">{tx.description}</p>
-                  <p className="text-xs text-[var(--text-muted)]">
-                    {fmtDate(tx.date)} · {tx.category.name}
-                    {tx.subcategory ? ` / ${tx.subcategory.name}` : ""}
-                  </p>
-                </div>
-                <span
-                  className={`shrink-0 text-sm font-medium ${
-                    tx.type === "INCOME" ? "income-text" : "expense-text"
-                  }`}
-                >
-                  {tx.type === "EXPENSE" ? "−" : "+"}
-                  {fmtAmt(tx)}
-                </span>
-              </div>
-            ))}
-          </div>
-        </>
-      )}
-
-      {/* ── Pagination ── */}
-      {totalPages > 1 && (
-        <div className="flex items-center justify-center gap-4 pt-2">
-          <button
-            disabled={page <= 1}
-            onClick={() => setPage((p) => p - 1)}
-            className="btn-ghost flex items-center gap-1 disabled:opacity-30"
-          >
-            <ChevronLeft size={14} /> Назад
-          </button>
-          <span className="text-sm text-[var(--text-muted)]">
-            Страница {page} из {totalPages}
-          </span>
-          <button
-            disabled={page >= totalPages}
-            onClick={() => setPage((p) => p + 1)}
-            className="btn-ghost flex items-center gap-1 disabled:opacity-30"
-          >
-            Вперёд <ChevronRight size={14} />
-          </button>
-        </div>
-      )}
-
-      {/* ── Bulk delete confirmation ── */}
-      {showBulkConfirm && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
-          onClick={() => setShowBulkConfirm(false)}
-        >
-          <div
-            className="glass-card w-full max-w-sm space-y-4 p-6"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h2 className="text-lg font-semibold">Подтвердите удаление</h2>
-            <p className="text-sm text-[var(--text-muted)]">
-              Удалить {selected.size} транзакций? Это действие нельзя отменить.
-            </p>
-            <div className="flex gap-2 justify-end">
-              <button
-                className="btn-ghost"
-                onClick={() => setShowBulkConfirm(false)}
-              >
-                Отмена
-              </button>
-              <button
-                onClick={bulkDelete}
-                className="rounded-lg bg-rose-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-rose-700"
-              >
-                Удалить
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ── Edit modal ── */}
-      {editing && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
-          onClick={() => setEditing(null)}
-        >
-          <div
-            className="glass-card w-full max-w-md space-y-4 p-6"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h2 className="text-lg font-semibold">Редактировать запись</h2>
-
-            {/* type toggle */}
-            <div className="flex gap-2">
-              {(["INCOME", "EXPENSE"] as const).map((t) => (
-                <button
-                  key={t}
-                  onClick={() =>
-                    setEditForm((f) => ({ ...f, type: t, categoryId: "", subcategoryId: "" }))
-                  }
-                  className={`flex-1 rounded-lg py-2 text-sm font-medium transition ${
-                    editForm.type === t
-                      ? t === "INCOME"
-                        ? "bg-emerald-600/30 text-emerald-300"
-                        : "bg-rose-600/30 text-rose-300"
-                      : "bg-white/5 text-[var(--text-muted)]"
-                  }`}
-                >
-                  {t === "INCOME" ? "Доход" : "Расход"}
-                </button>
-              ))}
-            </div>
-
-            {/* currency + amount */}
-            <div className="flex gap-1.5">
-              {(["USD", "EUR"] as const).map((c) => (
-                <button
-                  key={c}
-                  onClick={() =>
-                    setEditForm((f) => ({
-                      ...f,
-                      currency: c,
-                      exchangeRate: c === "EUR" ? (f.currency === "EUR" ? f.exchangeRate : eurRate) : 1,
-                    }))
-                  }
-                  className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
-                    editForm.currency === c
-                      ? "bg-[var(--accent-blue)] text-white"
-                      : "bg-white/5 text-[var(--text-muted)]"
-                  }`}
-                >
-                  {c === "USD" ? "$ USD" : "€ EUR"}
-                </button>
-              ))}
-            </div>
-            <input
-              type="number"
-              step="0.01"
-              placeholder="Сумма"
-              value={editForm.amount}
-              onChange={(e) =>
-                setEditForm((f) => ({ ...f, amount: e.target.value }))
-              }
-            />
-            {editForm.currency === "EUR" && (
-              <p className="text-xs text-[var(--text-muted)]">
-                Курс сохранения: 1 EUR = {editForm.exchangeRate.toFixed(4)} USD
-              </p>
-            )}
-
-            {/* category */}
-            <select
-              value={editForm.categoryId}
-              onChange={(e) =>
-                setEditForm((f) => ({ ...f, categoryId: e.target.value, subcategoryId: "" }))
-              }
-            >
-              <option value="">Категория</option>
-              {editCategories.map((c) => (
+          <option value="">Все категории</option>
+          {incomeCategories.length > 0 ? (
+            <optgroup label="Доход">
+              {incomeCategories.map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.name}
                 </option>
               ))}
-            </select>
+            </optgroup>
+          ) : null}
+          {expenseCategories.length > 0 ? (
+            <optgroup label="Расход">
+              {expenseCategories.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
+                </option>
+              ))}
+            </optgroup>
+          ) : null}
+        </Select>
 
-            {editSubcategories.length > 0 && (
-              <select
-                value={editForm.subcategoryId}
-                onChange={(e) =>
-                  setEditForm((f) => ({ ...f, subcategoryId: e.target.value }))
-                }
-              >
-                <option value="">Подкатегория (необязательно)</option>
-                {editSubcategories.map((subcategory) => (
-                  <option key={subcategory.id} value={subcategory.id}>
-                    {subcategory.name}
-                  </option>
-                ))}
-              </select>
+        {selectedCategory && selectedCategory.subcategories.length > 0 ? (
+          <Select
+            value={subcategoryId}
+            onChange={(e) => {
+              setSubcategoryId(e.target.value);
+              setPage(1);
+            }}
+            className="w-44"
+            aria-label="Подкатегория"
+          >
+            <option value="">Все подкатегории</option>
+            {selectedCategory.subcategories.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name}
+              </option>
+            ))}
+          </Select>
+        ) : null}
+
+        <Select
+          value={currency}
+          onChange={(e) => {
+            setCurrency(e.target.value as CurrencyFilter);
+            setPage(1);
+          }}
+          className="w-32"
+          aria-label="Валюта"
+        >
+          <option value="all">Все валюты</option>
+          <option value="USD">USD</option>
+          <option value="EUR">EUR</option>
+        </Select>
+
+        <PeriodPicker
+          value={period}
+          onChange={(p) => {
+            setPeriod(p);
+            setPage(1);
+          }}
+          className="ml-auto"
+        />
+
+        {hasActiveFilters ? (
+          <Button variant="ghost" size="sm" icon={<X size={14} />} onClick={resetFilters}>
+            Сбросить
+          </Button>
+        ) : null}
+      </Card>
+
+      {/* Итоги по фильтру */}
+      {totals && !loadError ? (
+        <div className="tnum px-1 text-[13px] text-ink-3">
+          Доход{" "}
+          <span className="font-medium text-income">{formatSigned(totals.income)}</span>
+          {" · "}Расход{" "}
+          <span className="font-medium text-ink-2">{formatSigned(-totals.expense)}</span>
+          {" · "}Итог{" "}
+          <span
+            className={clsx(
+              "font-medium",
+              totals.net > 0 ? "text-income" : totals.net < 0 ? "text-expense" : "text-ink-2",
             )}
-
-            {/* description */}
-            <input
-              placeholder="Описание"
-              value={editForm.description}
-              onChange={(e) =>
-                setEditForm((f) => ({ ...f, description: e.target.value }))
-              }
-            />
-
-            {/* date */}
-            <input
-              type="date"
-              value={editForm.date}
-              onChange={(e) =>
-                setEditForm((f) => ({ ...f, date: e.target.value }))
-              }
-            />
-
-            {/* tags */}
-            <input
-              placeholder="Теги (через запятую)"
-              value={editForm.tags}
-              onChange={(e) =>
-                setEditForm((f) => ({ ...f, tags: e.target.value }))
-              }
-            />
-
-            {/* actions */}
-            <div className="flex items-center gap-2 pt-2">
-              <button onClick={saveEdit} className="btn-primary" disabled={saving}>
-                {saving ? "Сохранение…" : "Сохранить"}
-              </button>
-              <button className="btn-ghost" onClick={() => setEditing(null)}>
-                Отмена
-              </button>
-              <button
-                onClick={() => setShowDeleteConfirm(true)}
-                className="ml-auto text-sm text-rose-400 transition hover:text-rose-300"
-              >
-                <Trash2 size={16} />
-              </button>
-            </div>
-
-            {/* delete confirm inline */}
-            {showDeleteConfirm && (
-              <div className="flex items-center gap-2 rounded-lg bg-rose-600/10 p-3 text-sm">
-                <span className="text-rose-300">Точно удалить?</span>
-                <button
-                  onClick={deleteOne}
-                  className="rounded bg-rose-600 px-3 py-1 text-xs font-medium text-white"
-                >
-                  Да
-                </button>
-                <button
-                  onClick={() => setShowDeleteConfirm(false)}
-                  className="btn-ghost !px-2 !py-1 !text-xs"
-                >
-                  Нет
-                </button>
-              </div>
-            )}
-          </div>
+          >
+            {formatSigned(totals.net)}
+          </span>
         </div>
+      ) : null}
+
+      {/* Панель выделения */}
+      {selected.size > 0 ? (
+        <Card className="flex items-center justify-between gap-3 border-accent/40 px-4 py-2.5">
+          <span className="text-sm text-ink-2">
+            Выбрано: <span className="tnum font-semibold text-ink">{selected.size}</span>
+          </span>
+          <div className="flex items-center gap-2">
+            <Button variant="ghost" size="sm" onClick={() => setSelected(new Set())}>
+              Отменить
+            </Button>
+            <Button
+              variant="danger"
+              size="sm"
+              icon={<Trash2 size={14} />}
+              onClick={() => setBulkConfirmOpen(true)}
+            >
+              Удалить
+            </Button>
+          </div>
+        </Card>
+      ) : null}
+
+      {/* Содержимое: загрузка / ошибка / пусто / данные */}
+      {loading ? (
+        <Card className="px-4 py-4">
+          <div className="flex flex-col gap-2.5">
+            {Array.from({ length: 8 }).map((_, i) => (
+              <Skeleton key={i} className="h-9 w-full" />
+            ))}
+          </div>
+        </Card>
+      ) : loadError ? (
+        <Card className="flex flex-col items-center gap-3 px-5 py-10 text-center">
+          <p className="text-sm text-ink-2">{loadError}</p>
+          <Button variant="secondary" onClick={refresh}>
+            Повторить
+          </Button>
+        </Card>
+      ) : !items || items.length === 0 ? (
+        <Card>
+          <EmptyState
+            title="Ничего не найдено"
+            hint={
+              hasActiveFilters
+                ? "Попробуйте изменить условия фильтров"
+                : "Добавьте первую операцию, чтобы она появилась здесь"
+            }
+            action={
+              hasActiveFilters ? (
+                <Button variant="secondary" size="sm" onClick={resetFilters}>
+                  Сбросить фильтры
+                </Button>
+              ) : (
+                <Link href="/add">
+                  <Button variant="primary" size="sm" icon={<Plus size={14} />}>
+                    Добавить
+                  </Button>
+                </Link>
+              )
+            }
+          />
+        </Card>
+      ) : (
+        <>
+          {/* Таблица (десктоп) */}
+          <Card className="hidden overflow-hidden md:block">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-edge text-left text-[12px] text-ink-3">
+                  <th className="w-10 px-4 py-2.5">
+                    <input
+                      type="checkbox"
+                      aria-label="Выбрать всё на странице"
+                      checked={allOnPageSelected}
+                      onChange={toggleSelectAll}
+                      className={checkboxClasses}
+                    />
+                  </th>
+                  <th className="px-3 py-2.5">
+                    <SortHeader
+                      label="Дата"
+                      active={sort === "date"}
+                      dir={dir}
+                      onClick={() => toggleSort("date")}
+                    />
+                  </th>
+                  <th className="px-3 py-2.5 font-medium">Описание</th>
+                  <th className="px-3 py-2.5 font-medium">Категория</th>
+                  <th className="px-3 py-2.5 text-right">
+                    <SortHeader
+                      label="Сумма"
+                      active={sort === "amount"}
+                      dir={dir}
+                      onClick={() => toggleSort("amount")}
+                      alignRight
+                    />
+                  </th>
+                  <th className="w-20 px-4 py-2.5" />
+                </tr>
+              </thead>
+              <tbody>
+                {items.map((tx) => (
+                  <tr
+                    key={tx.id}
+                    className={clsx(
+                      "border-b border-edge transition-colors last:border-b-0 hover:bg-surface-2",
+                      selected.has(tx.id) && "bg-surface-2",
+                    )}
+                  >
+                    <td className="px-4 py-2.5">
+                      <input
+                        type="checkbox"
+                        aria-label="Выбрать операцию"
+                        checked={selected.has(tx.id)}
+                        onChange={() => toggleSelect(tx.id)}
+                        className={checkboxClasses}
+                      />
+                    </td>
+                    <td className="tnum whitespace-nowrap px-3 py-2.5 text-ink-2">
+                      {formatDay(tx.date, { today })}
+                    </td>
+                    <td className="max-w-[280px] px-3 py-2.5">
+                      <span className="flex items-center gap-2">
+                        <span className="truncate text-ink">{tx.description || "—"}</span>
+                        {tagChips(tx.tags)}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2.5">
+                      <span className="flex items-center gap-2">
+                        <CategoryBadge name={tx.category.name} color={tx.category.color} />
+                        {tx.subcategory ? (
+                          <span className="truncate text-[12px] text-ink-3">
+                            {tx.subcategory.name}
+                          </span>
+                        ) : null}
+                      </span>
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-2.5 text-right">
+                      <TxAmount
+                        type={tx.type}
+                        amount={tx.amount}
+                        originalAmount={tx.originalAmount}
+                        currency={tx.currency}
+                      />
+                    </td>
+                    <td className="px-4 py-2.5">{rowActions(tx)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </Card>
+
+          {/* Карточки (мобила) */}
+          <div className="flex flex-col gap-2 md:hidden">
+            {items.map((tx) => (
+              <Card key={tx.id} className="flex items-start gap-3 px-4 py-3">
+                <input
+                  type="checkbox"
+                  aria-label="Выбрать операцию"
+                  checked={selected.has(tx.id)}
+                  onChange={() => toggleSelect(tx.id)}
+                  className={clsx(checkboxClasses, "mt-1")}
+                />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-baseline justify-between gap-2">
+                    <p className="truncate text-sm font-medium text-ink">
+                      {tx.description || "—"}
+                    </p>
+                    <TxAmount
+                      type={tx.type}
+                      amount={tx.amount}
+                      originalAmount={tx.originalAmount}
+                      currency={tx.currency}
+                      className="shrink-0"
+                    />
+                  </div>
+                  <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[12px] text-ink-3">
+                    <span className="tnum">{formatDay(tx.date, { today })}</span>
+                    <CategoryBadge name={tx.category.name} color={tx.category.color} />
+                    {tx.subcategory ? <span>{tx.subcategory.name}</span> : null}
+                    {tagChips(tx.tags)}
+                  </div>
+                </div>
+                <div className="flex shrink-0 items-center gap-1">{rowActions(tx)}</div>
+              </Card>
+            ))}
+          </div>
+
+          {/* Пагинация */}
+          <Pagination
+            page={page}
+            totalPages={totalPages}
+            total={total}
+            pageSize={pageSize}
+            onPageChange={setPage}
+            onPageSizeChange={(size) => {
+              setPageSize(size);
+              setPage(1);
+            }}
+          />
+        </>
       )}
+
+      {/* Удаление одной операции */}
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={confirmDeleteOne}
+        title="Удалить операцию"
+        loading={deleting}
+        message={
+          deleteTarget ? (
+            <>
+              Удалить операцию{" "}
+              <span className="font-medium text-ink">
+                {deleteTarget.description || formatDay(deleteTarget.date, { today })}
+              </span>
+              ? Это действие необратимо.
+            </>
+          ) : null
+        }
+      />
+
+      {/* Массовое удаление */}
+      <ConfirmDialog
+        open={bulkConfirmOpen}
+        onClose={() => setBulkConfirmOpen(false)}
+        onConfirm={confirmBulkDelete}
+        title="Удалить выбранные операции"
+        loading={bulkDeleting}
+        message={`Удалить ${selected.size} ${pluralOps(selected.size, "операцию", "операции", "операций")}? Это действие необратимо.`}
+      />
+
+      {/* Редактирование */}
+      <Modal
+        open={editing !== null}
+        onClose={() => setEditing(null)}
+        title="Редактировать операцию"
+      >
+        {editing ? (
+          <TransactionForm
+            initial={editing}
+            categories={categories}
+            onSubmit={submitEdit}
+            submitLabel="Сохранить"
+            onCancel={() => setEditing(null)}
+          />
+        ) : null}
+      </Modal>
     </div>
   );
 }

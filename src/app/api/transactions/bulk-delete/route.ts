@@ -1,20 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import { prisma } from "@/lib/prisma";
+import { parseBody, requireSession } from "@/lib/api-server";
+
+const bulkDeleteSchema = z.object({
+  ids: z.array(z.string().min(1)).min(1, "Не выбрано ни одной записи").max(1000),
+});
 
 export async function POST(req: NextRequest) {
-  const body = await req.json();
-  const { ids } = body;
+  const denied = await requireSession(req);
+  if (denied) return denied;
 
-  if (!Array.isArray(ids) || ids.length === 0) {
-    return NextResponse.json(
-      { error: "ids должен быть непустым массивом" },
-      { status: 400 },
-    );
-  }
+  const { data, error } = await parseBody(req, bulkDeleteSchema);
+  if (error) return error;
 
   const result = await prisma.transaction.deleteMany({
-    where: { id: { in: ids } },
+    where: { id: { in: data.ids } },
   });
 
-  return NextResponse.json({ deleted: result.count });
+  return NextResponse.json({ ok: true, deleted: result.count });
 }

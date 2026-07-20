@@ -31,3 +31,8 @@ export async function validateSession(token: string): Promise<boolean> {
 export async function deleteSession(token: string): Promise<void> {
   await prisma.session.deleteMany({ where: { token } });
 }
+
+/** Чистка протухших сессий, чтобы таблица не росла бесконечно. */
+export async function cleanupExpiredSessions(): Promise<void> {
+  await prisma.session.deleteMany({ where: { expiresAt: { lt: new Date() } } });
+}

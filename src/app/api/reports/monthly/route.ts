@@ -1,146 +1,95 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { jsonError, requireSession } from "@/lib/api-server";
 import {
-  enumerateMonthKeys,
-  formatUtcDateKey,
-  monthKeyFromDate,
-  parseDateKey,
-} from "@/lib/date-utils";
-import { roundMoney } from "@/lib/money";
+  dateKeyToUtc,
+  enumerateMonths,
+  isDateKey,
+  monthKeyOf,
+  utcDateToKey,
+} from "@/lib/dates";
+import { round2 } from "@/lib/money";
+import type { MonthlyReportRow } from "@/lib/types";
 
-function fallbackRange(months: number) {
-  const now = new Date();
-  const from = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - months + 1, 1));
-  return {
-    from: formatUtcDateKey(from),
-    to: formatUtcDateKey(now),
-  };
-}
-
-async function resolveRange(req: NextRequest) {
-  const params = req.nextUrl.searchParams;
-  const allTime = params.get("allTime") === "true";
-  const fromParam = params.get("from");
-  const toParam = params.get("to");
-
-  if (allTime) {
-    const bounds = await prisma.transaction.aggregate({
-      _min: { date: true },
-      _max: { date: true },
-    });
-    const minDate = bounds._min.date;
-    const maxDate = bounds._max.date;
-    if (!minDate || !maxDate) {
-      const today = formatUtcDateKey(new Date());
-      return { from: today, to: today, allTime: true };
-    }
-    return {
-      from: formatUtcDateKey(minDate),
-      to: formatUtcDateKey(maxDate),
-      allTime: true,
-    };
-  }
-
-  if (fromParam && toParam) {
-    return { from: fromParam, to: toParam, allTime: false };
-  }
-
-  const months = Math.min(60, Math.max(1, Number(params.get("months")) || 6));
-  return { ...fallbackRange(months), allTime: false };
-}
-
+/**
+ * GET /api/reports/monthly?from=&to=  (или ?months=N — последние N месяцев)
+ * Помесячный P&L. Пустые месяцы внутри диапазона включаются нулями;
+ * best/worst считаются только по месяцам, где были операции.
+ */
 export async function GET(req: NextRequest) {
-  const range = await resolveRange(req);
-  const fromDate = parseDateKey(range.from);
-  const toDate = parseDateKey(range.to);
-  const monthKeys = enumerateMonthKeys(range.from, range.to);
+  const denied = await requireSession(req);
+  if (denied) return denied;
 
-  const transactions = await prisma.transaction.findMany({
-    where: { date: { gte: fromDate, lte: toDate } },
-    include: { category: true },
-    orderBy: [{ date: "asc" }, { createdAt: "asc" }],
-  });
+  const url = req.nextUrl.searchParams;
+  let from = url.get("from");
+  let to = url.get("to");
 
-  const buckets = new Map<string, { income: number; expense: number }>();
-  const categoryBuckets = new Map<
-    string,
-    Map<string, { categoryId: string; categoryName: string; categoryColor: string; total: number }>
-  >();
-
-  for (const key of monthKeys) {
-    buckets.set(key, { income: 0, expense: 0 });
-    categoryBuckets.set(key, new Map());
+  if ((from && !isDateKey(from)) || (to && !isDateKey(to))) {
+    return jsonError("Даты должны быть в формате YYYY-MM-DD", 400);
+  }
+  if (from && to && from > to) {
+    return jsonError("from не может быть позже to", 400);
   }
 
-  for (const tx of transactions) {
-    const key = monthKeyFromDate(tx.date);
-    const bucket = buckets.get(key);
-    if (!bucket) continue;
+  const bounds = await prisma.transaction.aggregate({ _min: { date: true }, _max: { date: true } });
+  if (!bounds._min.date || !bounds._max.date) {
+    return NextResponse.json({ months: [], best: null, worst: null, totals: null });
+  }
+  const dataFrom = utcDateToKey(bounds._min.date);
+  const dataTo = utcDateToKey(bounds._max.date);
 
-    const amt = Number(tx.amount);
-    if (tx.type === "INCOME") {
-      bucket.income += amt;
-      continue;
-    }
-
-    bucket.expense += amt;
-    const monthCategories = categoryBuckets.get(key);
-    if (!monthCategories) continue;
-
-    const existing = monthCategories.get(tx.categoryId);
-    if (existing) {
-      existing.total += amt;
+  const monthsParam = Number(url.get("months"));
+  if (!from || !to) {
+    if (monthsParam > 0 && monthsParam <= 60) {
+      const allMonths = enumerateMonths(dataFrom, dataTo);
+      const lastMonths = allMonths.slice(-monthsParam);
+      from = `${lastMonths[0]}-01`;
+      to = dataTo;
     } else {
-      monthCategories.set(tx.categoryId, {
-        categoryId: tx.categoryId,
-        categoryName: tx.category.name,
-        categoryColor: tx.category.color,
-        total: amt,
-      });
+      from = dataFrom;
+      to = dataTo;
     }
   }
 
-  const rows = Array.from(buckets.entries()).map(([month, data]) => ({
-    month,
-    income: roundMoney(data.income),
-    expense: roundMoney(data.expense),
-    profit: roundMoney(data.income - data.expense),
-  }));
-
-  const categoryMonthly = Array.from(categoryBuckets.entries()).map(([month, data]) => ({
-    month,
-    categories: Array.from(data.values())
-      .map((cat) => ({ ...cat, total: roundMoney(cat.total) }))
-      .sort((a, b) => b.total - a.total),
-  }));
-
-  const totalIncome = roundMoney(rows.reduce((sum, row) => sum + row.income, 0));
-  const totalExpense = roundMoney(rows.reduce((sum, row) => sum + row.expense, 0));
-  const profit = roundMoney(totalIncome - totalExpense);
-  const activeMonths = rows.filter((row) => row.income !== 0 || row.expense !== 0).length;
-  const bestMonth = rows.reduce<(typeof rows)[number] | null>(
-    (best, row) => (!best || row.profit > best.profit ? row : best),
-    null,
-  );
-  const worstMonth = rows.reduce<(typeof rows)[number] | null>(
-    (worst, row) => (!worst || row.profit < worst.profit ? row : worst),
-    null,
-  );
-
-  return NextResponse.json({
-    period: range,
-    rows,
-    categoryMonthly,
-    totals: {
-      income: totalIncome,
-      expense: totalExpense,
-      profit,
-      margin: totalIncome > 0 ? roundMoney((profit / totalIncome) * 100) : null,
-      averageIncome: activeMonths > 0 ? roundMoney(totalIncome / activeMonths) : 0,
-      averageExpense: activeMonths > 0 ? roundMoney(totalExpense / activeMonths) : 0,
-      activeMonths,
-      bestMonth,
-      worstMonth,
-    },
+  const txs = await prisma.transaction.findMany({
+    where: { date: { gte: dateKeyToUtc(from), lte: dateKeyToUtc(to) } },
+    select: { type: true, amount: true, date: true },
   });
+
+  const byMonth = new Map<string, { income: number; expense: number }>();
+  for (const m of enumerateMonths(from, to)) byMonth.set(m, { income: 0, expense: 0 });
+
+  for (const t of txs) {
+    const m = monthKeyOf(utcDateToKey(t.date));
+    const entry = byMonth.get(m);
+    if (!entry) continue;
+    if (t.type === "INCOME") entry.income += Number(t.amount);
+    else entry.expense += Number(t.amount);
+  }
+
+  const months: MonthlyReportRow[] = [...byMonth.entries()].map(([month, v]) => ({
+    month,
+    income: round2(v.income),
+    expense: round2(v.expense),
+    profit: round2(v.income - v.expense),
+  }));
+
+  const active = months.filter((m) => m.income !== 0 || m.expense !== 0);
+  const best = active.length
+    ? active.reduce((a, b) => (b.profit > a.profit ? b : a))
+    : null;
+  const worst = active.length
+    ? active.reduce((a, b) => (b.profit < a.profit ? b : a))
+    : null;
+
+  const totals = months.reduce(
+    (acc, m) => ({
+      income: round2(acc.income + m.income),
+      expense: round2(acc.expense + m.expense),
+      profit: round2(acc.profit + m.profit),
+    }),
+    { income: 0, expense: 0, profit: 0 },
+  );
+
+  return NextResponse.json({ months, best, worst, totals });
 }

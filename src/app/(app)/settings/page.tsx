@@ -1,696 +1,613 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
-import {
-  ChevronDown,
-  Pencil,
-  Trash2,
-  Plus,
-  Download,
-  LogOut,
-  Check,
-  X,
-  Key,
-  Eye,
-  EyeOff,
-  Sparkles,
-} from "lucide-react";
-import { DateRangePreset, getDateRangePreset } from "@/lib/date-utils";
+import { ArrowDown, ArrowUp, Download, LogOut, Pencil, Plus, Trash2, X } from "lucide-react";
+import { apiDelete, apiDownload, apiGet, apiPatch, apiPost } from "@/lib/api-client";
+import type { CategoryDto, SubcategoryDto, TxType } from "@/lib/types";
+import { Button, IconButton } from "@/components/ui/Button";
+import { Card, CardHeader } from "@/components/ui/Card";
+import { Input } from "@/components/ui/Input";
+import { ConfirmDialog } from "@/components/ui/Modal";
+import { errorMessage, useToast } from "@/components/ui/Toast";
+import { EmptyState, Spinner } from "@/components/ui/misc";
+import { logout } from "@/components/navigation/Sidebar";
 
 /* ------------------------------------------------------------------ */
-/*  Types                                                              */
+/*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
 
-interface Category {
-  id: string;
-  name: string;
-  type: "INCOME" | "EXPENSE";
-  color: string;
+/** «1 операция», «2 операции», «5 операций». */
+function pluralOps(n: number): string {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return `${n} операция`;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return `${n} операции`;
+  return `${n} операций`;
 }
 
-/* ------------------------------------------------------------------ */
-/*  Constants                                                          */
-/* ------------------------------------------------------------------ */
-
-const PRESET_COLORS = [
-  "#f43f5e", "#ef4444", "#f97316", "#eab308", "#22c55e",
-  "#10b981", "#06b6d4", "#3b82f6", "#6366f1", "#a855f7",
-];
-
-type ExportType = "" | "INCOME" | "EXPENSE";
+const DEFAULT_COLORS: Record<TxType, string> = {
+  INCOME: "#22c55e",
+  EXPENSE: "#f43f5e",
+};
 
 /* ------------------------------------------------------------------ */
 /*  Page                                                               */
 /* ------------------------------------------------------------------ */
 
 export default function SettingsPage() {
-  const router = useRouter();
+  const { toast } = useToast();
 
-  /* ---------- Categories state ---------- */
+  const [categories, setCategories] = useState<CategoryDto[] | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const requestRef = useRef(0);
 
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  const fetchCategories = useCallback(async () => {
+  const load = useCallback(async () => {
+    const requestId = ++requestRef.current;
+    setLoadError(null);
     try {
-      const res = await fetch("/api/categories");
-      const data = await res.json();
-      setCategories(data.categories ?? []);
-    } catch {
-      /* ignore */
-    } finally {
-      setLoading(false);
+      const data = await apiGet<{ categories: CategoryDto[] }>("/api/categories");
+      if (requestId !== requestRef.current) return;
+      setCategories(data.categories);
+    } catch (e) {
+      if (requestId !== requestRef.current) return;
+      setLoadError(errorMessage(e));
     }
   }, []);
 
   useEffect(() => {
-    fetchCategories();
-  }, [fetchCategories]);
+    // Загрузка данных при монтировании — setState происходит после await
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void load();
+  }, [load]);
 
-  const incomeCategories = categories.filter((c) => c.type === "INCOME");
-  const expenseCategories = categories.filter((c) => c.type === "EXPENSE");
-
-  /* ---------- Editing state ---------- */
-
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editName, setEditName] = useState("");
-  const editInputRef = useRef<HTMLInputElement>(null);
-
-  function startEdit(cat: Category) {
-    setEditingId(cat.id);
-    setEditName(cat.name);
-    setTimeout(() => editInputRef.current?.focus(), 0);
-  }
-
-  async function saveEdit(id: string) {
-    if (!editName.trim()) return;
-    try {
-      const res = await fetch(`/api/categories/${id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: editName.trim() }),
-      });
-      if (res.ok) {
-        const updated = await res.json();
-        setCategories((prev) =>
-          prev.map((c) => (c.id === id ? { ...c, name: updated.name } : c)),
-        );
-      }
-    } catch {
-      /* ignore */
-    }
-    setEditingId(null);
-  }
-
-  /* ---------- Delete ---------- */
-
-  async function deleteCategory(id: string) {
-    if (!confirm("Удалить категорию? Это действие нельзя отменить.")) return;
-    try {
-      const res = await fetch(`/api/categories/${id}`, { method: "DELETE" });
-      if (res.ok) {
-        setCategories((prev) => prev.filter((c) => c.id !== id));
-      } else {
-        const body = await res.json();
-        alert(body.error ?? "Ошибка при удалении");
-      }
-    } catch {
-      alert("Ошибка сети");
-    }
-  }
-
-  /* ---------- Add new ---------- */
-
-  const [newIncomeName, setNewIncomeName] = useState("");
-  const [newIncomeColor, setNewIncomeColor] = useState(PRESET_COLORS[4]);
-  const [newExpenseName, setNewExpenseName] = useState("");
-  const [newExpenseColor, setNewExpenseColor] = useState(PRESET_COLORS[0]);
-
-  async function addCategory(type: "INCOME" | "EXPENSE") {
-    const name = type === "INCOME" ? newIncomeName : newExpenseName;
-    const color = type === "INCOME" ? newIncomeColor : newExpenseColor;
-    if (!name.trim()) return;
-
-    try {
-      const res = await fetch("/api/categories", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: name.trim(), type, color }),
-      });
-      if (res.ok) {
-        const created = await res.json();
-        setCategories((prev) => [...prev, created]);
-        if (type === "INCOME") {
-          setNewIncomeName("");
-          setNewIncomeColor(PRESET_COLORS[4]);
-        } else {
-          setNewExpenseName("");
-          setNewExpenseColor(PRESET_COLORS[0]);
-        }
-      }
-    } catch {
-      alert("Ошибка при создании");
-    }
-  }
-
-  /* ---------- Export state ---------- */
-
-  const [exportFrom, setExportFrom] = useState("");
-  const [exportTo, setExportTo] = useState("");
-  const [exportType, setExportType] = useState<ExportType>("");
-
-  function applyExportPreset(preset: DateRangePreset) {
-    if (preset === "all_time") {
-      setExportFrom("");
-      setExportTo("");
-      return;
-    }
-    const range = getDateRangePreset(preset);
-    setExportFrom(range.from);
-    setExportTo(range.to);
-  }
-
-  async function handleExport() {
-    const params = new URLSearchParams();
-    if (exportFrom) params.set("from", exportFrom);
-    if (exportTo) params.set("to", exportTo);
-    if (exportType) params.set("type", exportType);
-
-    const res = await fetch(`/api/export?${params}`);
-    if (!res.ok) {
-      alert("Ошибка экспорта");
-      return;
-    }
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "export.csv";
-    a.click();
-    URL.revokeObjectURL(url);
-  }
-
-  /* ---------- Subcategories ---------- */
-
-  interface Subcategory {
-    id: string;
-    name: string;
-    categoryId: string;
-  }
-
-  const [subs, setSubs] = useState<Subcategory[]>([]);
-  const [expandedCat, setExpandedCat] = useState<string | null>(null);
-  const [newSubName, setNewSubName] = useState("");
-  const [editSubId, setEditSubId] = useState<string | null>(null);
-  const [editSubName, setEditSubName] = useState("");
-
-  useEffect(() => {
-    fetch("/api/subcategories")
-      .then((r) => r.json())
-      .then((d) => setSubs(d.subcategories ?? []))
-      .catch(() => {});
+  /** Точечное обновление категории в локальном стейте. */
+  const applyLocal = useCallback((id: string, patch: Partial<CategoryDto>) => {
+    setCategories((prev) =>
+      prev ? prev.map((c) => (c.id === id ? { ...c, ...patch } : c)) : prev,
+    );
   }, []);
 
-  async function addSub(categoryId: string) {
-    if (!newSubName.trim()) return;
-    try {
-      const res = await fetch("/api/subcategories", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: newSubName.trim(), categoryId }),
-      });
-      if (res.ok) {
-        const created = await res.json();
-        setSubs((prev) => [...prev, created]);
-        setNewSubName("");
-      } else {
-        const err = await res.json();
-        alert(err.error ?? "Ошибка");
+  /** Перестановка sortOrder категории с соседом (двумя PATCH-запросами). */
+  const moveCategory = useCallback(
+    async (list: CategoryDto[], index: number, dir: -1 | 1) => {
+      const cat = list[index];
+      const other = list[index + dir];
+      if (!cat || !other) return;
+      const a = cat.sortOrder;
+      const b = other.sortOrder;
+      // Оптимистичный локальный обмен
+      setCategories((prev) =>
+        prev
+          ? prev.map((c) =>
+              c.id === cat.id
+                ? { ...c, sortOrder: b }
+                : c.id === other.id
+                  ? { ...c, sortOrder: a }
+                  : c,
+            )
+          : prev,
+      );
+      try {
+        await Promise.all([
+          apiPatch(`/api/categories/${cat.id}`, { sortOrder: b }),
+          apiPatch(`/api/categories/${other.id}`, { sortOrder: a }),
+        ]);
+      } catch (e) {
+        toast(errorMessage(e), "error");
+        void load();
       }
-    } catch { alert("Ошибка сети"); }
-  }
+    },
+    [load, toast],
+  );
 
-  async function saveSub(id: string) {
-    if (!editSubName.trim()) return;
+  const sorted = (type: TxType) =>
+    (categories ?? [])
+      .filter((c) => c.type === type)
+      .sort((x, y) => x.sortOrder - y.sortOrder || x.name.localeCompare(y.name, "ru"));
+
+  async function downloadExport(format: "xlsx" | "csv") {
     try {
-      await fetch(`/api/subcategories/${id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: editSubName.trim() }),
-      });
-      setSubs((prev) => prev.map((s) => (s.id === id ? { ...s, name: editSubName.trim() } : s)));
-    } catch {}
-    setEditSubId(null);
+      await apiDownload("/api/export", { format });
+    } catch (e) {
+      toast(errorMessage(e), "error");
+    }
   }
-
-  async function deleteSub(id: string) {
-    if (!confirm("Удалить подкатегорию?")) return;
-    try {
-      await fetch(`/api/subcategories/${id}`, { method: "DELETE" });
-      setSubs((prev) => prev.filter((s) => s.id !== id));
-    } catch {}
-  }
-
-  /* ---------- OpenAI API Key ---------- */
-
-  const [apiKey, setApiKey] = useState("");
-  const [apiKeySaved, setApiKeySaved] = useState(false);
-  const [showKey, setShowKey] = useState(false);
-
-  useEffect(() => {
-    const stored = localStorage.getItem("openai_api_key") ?? "";
-    setApiKey(stored);
-  }, []);
-
-  function saveApiKey() {
-    localStorage.setItem("openai_api_key", apiKey.trim());
-    setApiKeySaved(true);
-    setTimeout(() => setApiKeySaved(false), 2000);
-  }
-
-  /* ---------- Logout ---------- */
-
-  async function handleLogout() {
-    await fetch("/api/auth/logout", { method: "POST" });
-    router.push("/login");
-  }
-
-  /* ------------------------------------------------------------------ */
-  /*  Render                                                             */
-  /* ------------------------------------------------------------------ */
 
   return (
-    <div className="space-y-6 pb-8">
-      <div>
-        <div className="premium-kicker mb-2 flex items-center gap-2">
-          <Sparkles className="h-3.5 w-3.5" />
-          Workspace settings
-        </div>
-        <h1 className="text-3xl font-black tracking-tight md:text-4xl">Настройки</h1>
-        <p className="mt-1 text-sm text-[var(--text-muted)]">
-          Категории, подкатегории, экспорт и API-ключи в одном месте.
-        </p>
-      </div>
+    <div className="flex flex-col gap-5">
+      <h1 className="text-[22px] font-bold tracking-tight">Настройки</h1>
 
-      {/* ===== Categories ===== */}
-      <div className="glass-card p-5">
-        <h2 className="mb-5 text-base font-semibold">Категории</h2>
-
-        <div className="grid gap-6 md:grid-cols-2">
-          {/* Income column */}
-          <CategoryColumn
-            title="Доходы"
-            items={incomeCategories}
-            loading={loading}
-            editingId={editingId}
-            editName={editName}
-            editInputRef={editInputRef}
-            onEditNameChange={setEditName}
-            onStartEdit={startEdit}
-            onSaveEdit={saveEdit}
-            onCancelEdit={() => setEditingId(null)}
-            onDelete={deleteCategory}
-            newName={newIncomeName}
-            onNewNameChange={setNewIncomeName}
-            newColor={newIncomeColor}
-            onNewColorChange={setNewIncomeColor}
-            onAdd={() => addCategory("INCOME")}
-          />
-
-          {/* Expense column */}
-          <CategoryColumn
-            title="Расходы"
-            items={expenseCategories}
-            loading={loading}
-            editingId={editingId}
-            editName={editName}
-            editInputRef={editInputRef}
-            onEditNameChange={setEditName}
-            onStartEdit={startEdit}
-            onSaveEdit={saveEdit}
-            onCancelEdit={() => setEditingId(null)}
-            onDelete={deleteCategory}
-            newName={newExpenseName}
-            onNewNameChange={setNewExpenseName}
-            newColor={newExpenseColor}
-            onNewColorChange={setNewExpenseColor}
-            onAdd={() => addCategory("EXPENSE")}
-          />
-        </div>
-      </div>
-
-      {/* ===== Subcategories ===== */}
-      <div className="glass-card p-5">
-        <h2 className="mb-4 text-base font-semibold">Подкатегории</h2>
-        <p className="mb-4 text-xs" style={{ color: "var(--text-muted)" }}>
-          Нажмите на категорию, чтобы добавить или управлять подкатегориями.
-        </p>
-        <div className="space-y-1">
-          {categories.map((cat) => {
-            const catSubs = subs.filter((s) => s.categoryId === cat.id);
-            const isOpen = expandedCat === cat.id;
-            return (
-              <div key={cat.id}>
-                <button
-                  onClick={() => { setExpandedCat(isOpen ? null : cat.id); setNewSubName(""); }}
-                  className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors hover:bg-white/5 ${isOpen ? "bg-white/5" : ""}`}
-                >
-                  <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: cat.color }} />
-                  <span className="flex-1">{cat.name}</span>
-                  <span className="text-xs" style={{ color: "var(--text-muted)" }}>
-                    {catSubs.length > 0 ? `${catSubs.length} шт` : "—"}
-                  </span>
-                  <ChevronDown size={14} className={`transition-transform ${isOpen ? "rotate-180" : ""}`} style={{ color: "var(--text-muted)" }} />
-                </button>
-
-                {isOpen && (
-                  <div className="ml-5 mt-1 space-y-1 border-l border-white/5 pl-3">
-                    {catSubs.map((s) => (
-                      <div key={s.id} className="group flex items-center gap-1.5 rounded-lg px-2 py-1.5 hover:bg-white/5">
-                        {editSubId === s.id ? (
-                          <div className="flex flex-1 items-center gap-1">
-                            <input
-                              value={editSubName}
-                              onChange={(e) => setEditSubName(e.target.value)}
-                              onKeyDown={(e) => { if (e.key === "Enter") saveSub(s.id); if (e.key === "Escape") setEditSubId(null); }}
-                              className="!py-1 !text-xs flex-1"
-                              autoFocus
-                            />
-                            <button onClick={() => saveSub(s.id)} className="rounded p-0.5 text-green-400 hover:bg-green-400/10"><Check size={12} /></button>
-                            <button onClick={() => setEditSubId(null)} className="rounded p-0.5 hover:bg-white/10" style={{ color: "var(--text-muted)" }}><X size={12} /></button>
-                          </div>
-                        ) : (
-                          <>
-                            <span className="flex-1 text-xs">{s.name}</span>
-                            <button onClick={() => { setEditSubId(s.id); setEditSubName(s.name); }} className="rounded p-0.5 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-white/10" style={{ color: "var(--text-muted)" }}><Pencil size={11} /></button>
-                            <button onClick={() => deleteSub(s.id)} className="rounded p-0.5 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-red-400/10" style={{ color: "#f87171" }}><Trash2 size={11} /></button>
-                          </>
-                        )}
-                      </div>
-                    ))}
-                    <div className="flex gap-1.5 pt-1">
-                      <input
-                        value={newSubName}
-                        onChange={(e) => setNewSubName(e.target.value)}
-                        onKeyDown={(e) => e.key === "Enter" && addSub(cat.id)}
-                        placeholder="Новая подкатегория"
-                        className="!py-1.5 !text-xs flex-1"
-                      />
-                      <button onClick={() => addSub(cat.id)} disabled={!newSubName.trim()} className="btn-primary flex shrink-0 items-center gap-1 !px-2.5 !py-1.5 !text-xs disabled:opacity-40">
-                        <Plus size={12} /> Добавить
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* ===== OpenAI API Key ===== */}
-      <div className="glass-card p-5">
-        <h2 className="mb-4 flex items-center gap-2 text-base font-semibold">
-          <Key size={18} className="text-[var(--accent-blue)]" />
-          OpenAI API-ключ
-        </h2>
-        <p className="mb-3 text-xs" style={{ color: "var(--text-muted)" }}>
-          Необходим для работы AI-ассистента. Ключ хранится только в вашем браузере.
-        </p>
-        <div className="flex gap-2">
-          <div className="relative flex-1">
-            <input
-              type={showKey ? "text" : "password"}
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder="sk-..."
-              className="!pr-10 !py-2 !text-sm w-full"
+      {/* ===== Категории ===== */}
+      <section>
+        {categories === null && !loadError ? (
+          <Card>
+            <Spinner />
+          </Card>
+        ) : loadError ? (
+          <Card className="px-5 py-4">
+            <p className="text-sm text-ink-2">{loadError}</p>
+            <Button variant="secondary" size="sm" className="mt-3" onClick={() => void load()}>
+              Повторить
+            </Button>
+          </Card>
+        ) : (
+          <div className="grid gap-4 lg:grid-cols-2">
+            <CategoryColumn
+              title="Доходы"
+              type="INCOME"
+              list={sorted("INCOME")}
+              applyLocal={applyLocal}
+              reload={load}
+              onMove={moveCategory}
             />
-            <button
-              onClick={() => setShowKey(!showKey)}
-              className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 hover:bg-white/10"
-              style={{ color: "var(--text-muted)" }}
-            >
-              {showKey ? <EyeOff size={16} /> : <Eye size={16} />}
-            </button>
+            <CategoryColumn
+              title="Расходы"
+              type="EXPENSE"
+              list={sorted("EXPENSE")}
+              applyLocal={applyLocal}
+              reload={load}
+              onMove={moveCategory}
+            />
           </div>
-          <button
-            onClick={saveApiKey}
-            className="btn-primary flex shrink-0 items-center gap-1"
+        )}
+      </section>
+
+      {/* ===== Данные ===== */}
+      <Card>
+        <CardHeader title="Данные" subtitle="Экспорт всех операций в файл" />
+        <div className="flex flex-wrap gap-2 px-5 pb-4">
+          <Button
+            variant="secondary"
+            icon={<Download size={15} />}
+            onClick={() => downloadExport("xlsx")}
           >
-            {apiKeySaved ? <Check size={14} /> : <Key size={14} />}
-            {apiKeySaved ? "Сохранено!" : "Сохранить"}
-          </button>
-        </div>
-      </div>
-
-      {/* ===== Export ===== */}
-      <div className="glass-card p-5">
-        <h2 className="mb-2 text-base font-semibold">Экспорт данных</h2>
-        <p className="mb-4 text-xs text-[var(--text-muted)]">
-          Экспорт не меняет данные: скачивается CSV по выбранным фильтрам.
-        </p>
-
-        <div className="mb-4 flex flex-wrap gap-2">
-          {(
-            [
-              ["current_month", "Этот месяц"],
-              ["previous_month", "Прошлый месяц"],
-              ["current_year", "Год"],
-              ["all_time", "Всё время"],
-            ] as const
-          ).map(([value, label]) => (
-            <button
-              key={value}
-              onClick={() => applyExportPreset(value)}
-              className="btn-ghost !px-3 !py-1.5 !text-xs"
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-
-        <div className="flex flex-wrap items-end gap-3">
-          <label className="space-y-1">
-            <span className="text-xs" style={{ color: "var(--text-muted)" }}>
-              От
-            </span>
-            <input
-              type="date"
-              value={exportFrom}
-              onChange={(e) => setExportFrom(e.target.value)}
-            />
-          </label>
-
-          <label className="space-y-1">
-            <span className="text-xs" style={{ color: "var(--text-muted)" }}>
-              До
-            </span>
-            <input
-              type="date"
-              value={exportTo}
-              onChange={(e) => setExportTo(e.target.value)}
-            />
-          </label>
-
-          <label className="space-y-1">
-            <span className="text-xs" style={{ color: "var(--text-muted)" }}>
-              Тип
-            </span>
-            <select
-              value={exportType}
-              onChange={(e) => setExportType(e.target.value as ExportType)}
-            >
-              <option value="">Все</option>
-              <option value="INCOME">Доходы</option>
-              <option value="EXPENSE">Расходы</option>
-            </select>
-          </label>
-
-          <button onClick={handleExport} className="btn-primary flex items-center gap-2">
-            <Download size={16} />
+            Скачать все данные (Excel)
+          </Button>
+          <Button
+            variant="secondary"
+            icon={<Download size={15} />}
+            onClick={() => downloadExport("csv")}
+          >
             Скачать CSV
-          </button>
+          </Button>
         </div>
-      </div>
+      </Card>
 
-      {/* ===== Account ===== */}
-      <div className="glass-card p-5">
-        <h2 className="mb-4 text-base font-semibold">Аккаунт</h2>
-        <button
-          onClick={handleLogout}
-          className="btn-ghost flex items-center gap-2 text-red-400 hover:text-red-300"
-          style={{ borderColor: "rgba(248,113,113,0.3)" }}
-        >
-          <LogOut size={16} />
-          Выйти
-        </button>
-      </div>
+      {/* ===== Сессия ===== */}
+      <Card>
+        <CardHeader title="Сессия" subtitle="Завершить работу и выйти из аккаунта" />
+        <div className="px-5 pb-4">
+          <Button variant="danger" icon={<LogOut size={15} />} onClick={() => void logout()}>
+            Выйти
+          </Button>
+        </div>
+      </Card>
     </div>
   );
 }
 
 /* ------------------------------------------------------------------ */
-/*  CategoryColumn                                                     */
+/*  Колонка категорий одного типа                                      */
 /* ------------------------------------------------------------------ */
 
 function CategoryColumn({
   title,
-  items,
-  loading,
-  editingId,
-  editName,
-  editInputRef,
-  onEditNameChange,
-  onStartEdit,
-  onSaveEdit,
-  onCancelEdit,
-  onDelete,
-  newName,
-  onNewNameChange,
-  newColor,
-  onNewColorChange,
-  onAdd,
+  type,
+  list,
+  applyLocal,
+  reload,
+  onMove,
 }: {
   title: string;
-  items: Category[];
-  loading: boolean;
-  editingId: string | null;
-  editName: string;
-  editInputRef: React.RefObject<HTMLInputElement | null>;
-  onEditNameChange: (v: string) => void;
-  onStartEdit: (cat: Category) => void;
-  onSaveEdit: (id: string) => void;
-  onCancelEdit: () => void;
-  onDelete: (id: string) => void;
-  newName: string;
-  onNewNameChange: (v: string) => void;
-  newColor: string;
-  onNewColorChange: (v: string) => void;
-  onAdd: () => void;
+  type: TxType;
+  list: CategoryDto[];
+  applyLocal: (id: string, patch: Partial<CategoryDto>) => void;
+  reload: () => Promise<void>;
+  onMove: (list: CategoryDto[], index: number, dir: -1 | 1) => Promise<void>;
 }) {
+  const { toast } = useToast();
+
+  const [adding, setAdding] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [newColor, setNewColor] = useState(DEFAULT_COLORS[type]);
+  const [creating, setCreating] = useState(false);
+
+  async function createCategory() {
+    const name = newName.trim();
+    if (!name) return;
+    setCreating(true);
+    try {
+      await apiPost("/api/categories", { name, type, color: newColor });
+      toast("Категория добавлена");
+      setNewName("");
+      setNewColor(DEFAULT_COLORS[type]);
+      setAdding(false);
+      await reload();
+    } catch (e) {
+      toast(errorMessage(e), "error");
+    } finally {
+      setCreating(false);
+    }
+  }
+
   return (
-    <div>
-      <h3
-        className="mb-3 text-sm font-medium"
-        style={{ color: "var(--text-muted)" }}
-      >
-        {title}
-      </h3>
-
-      {loading ? (
-        <div className="space-y-2">
-          {Array.from({ length: 3 }).map((_, i) => (
-            <div
-              key={i}
-              className="h-10 animate-pulse rounded-lg bg-white/5"
-            />
-          ))}
-        </div>
-      ) : (
-        <ul className="space-y-1">
-          {items.map((cat) => (
-            <li
-              key={cat.id}
-              className="group flex items-center gap-2 rounded-lg px-2 py-2 transition-colors hover:bg-white/5"
-            >
-              <span
-                className="h-3 w-3 shrink-0 rounded-full"
-                style={{ backgroundColor: cat.color }}
+    <Card>
+      <CardHeader title={title} />
+      <div className="flex flex-col px-5 pb-4">
+        {list.length === 0 ? (
+          <EmptyState title="Нет категорий" hint="Добавьте первую категорию ниже" />
+        ) : (
+          <div className="flex flex-col divide-y divide-edge">
+            {list.map((cat, index) => (
+              <CategoryRow
+                key={cat.id}
+                cat={cat}
+                first={index === 0}
+                last={index === list.length - 1}
+                onMoveUp={() => void onMove(list, index, -1)}
+                onMoveDown={() => void onMove(list, index, 1)}
+                applyLocal={applyLocal}
+                reload={reload}
               />
+            ))}
+          </div>
+        )}
 
-              {editingId === cat.id ? (
-                <div className="flex flex-1 items-center gap-1">
-                  <input
-                    ref={editInputRef}
-                    value={editName}
-                    onChange={(e) => onEditNameChange(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") onSaveEdit(cat.id);
-                      if (e.key === "Escape") onCancelEdit();
-                    }}
-                    className="!py-1 !text-sm"
-                  />
-                  <button
-                    onClick={() => onSaveEdit(cat.id)}
-                    className="rounded p-1 text-green-400 hover:bg-green-400/10"
-                  >
-                    <Check size={14} />
-                  </button>
-                  <button
-                    onClick={onCancelEdit}
-                    className="rounded p-1 hover:bg-white/10"
-                    style={{ color: "var(--text-muted)" }}
-                  >
-                    <X size={14} />
-                  </button>
-                </div>
-              ) : (
-                <>
-                  <span className="flex-1 text-sm">{cat.name}</span>
-                  <button
-                    onClick={() => onStartEdit(cat)}
-                    className="rounded p-1 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-white/10"
-                    style={{ color: "var(--text-muted)" }}
-                  >
-                    <Pencil size={14} />
-                  </button>
-                  <button
-                    onClick={() => onDelete(cat.id)}
-                    className="rounded p-1 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-red-400/10"
-                    style={{ color: "#f87171" }}
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                </>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
-
-      {/* Add new */}
-      <div className="mt-3 space-y-2">
-        <div className="flex gap-2">
-          <input
-            value={newName}
-            onChange={(e) => onNewNameChange(e.target.value)}
-            placeholder="Новая категория"
-            className="!py-2 !text-sm"
-            onKeyDown={(e) => {
-              if (e.key === "Enter") onAdd();
-            }}
-          />
-          <button
-            onClick={onAdd}
-            disabled={!newName.trim()}
-            className="btn-primary flex shrink-0 items-center gap-1 disabled:opacity-40"
-          >
-            <Plus size={14} />
-            Добавить
-          </button>
-        </div>
-
-        <div className="flex gap-1.5">
-          {PRESET_COLORS.map((c) => (
-            <button
-              key={c}
-              onClick={() => onNewColorChange(c)}
-              className="h-6 w-6 rounded-full transition-transform"
-              style={{
-                backgroundColor: c,
-                outline:
-                  newColor === c
-                    ? "2px solid white"
-                    : "2px solid transparent",
-                outlineOffset: "2px",
-                transform: newColor === c ? "scale(1.15)" : "scale(1)",
-              }}
+        {adding ? (
+          <div className="mt-3 flex items-center gap-2">
+            <input
+              type="color"
+              value={newColor}
+              onChange={(e) => setNewColor(e.target.value)}
+              aria-label="Цвет новой категории"
+              className="h-8 w-8 shrink-0 cursor-pointer rounded-[8px] border border-edge bg-surface-2 p-0.5"
             />
-          ))}
+            <Input
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void createCategory();
+                if (e.key === "Escape") {
+                  setAdding(false);
+                  setNewName("");
+                }
+              }}
+              placeholder="Название категории"
+              autoFocus
+              className="flex-1"
+            />
+            <Button
+              variant="primary"
+              size="sm"
+              loading={creating}
+              disabled={!newName.trim()}
+              onClick={() => void createCategory()}
+            >
+              Добавить
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setAdding(false);
+                setNewName("");
+              }}
+            >
+              Отмена
+            </Button>
+          </div>
+        ) : (
+          <Button
+            variant="ghost"
+            size="sm"
+            icon={<Plus size={14} />}
+            className="mt-3 self-start"
+            onClick={() => setAdding(true)}
+          >
+            Новая категория
+          </Button>
+        )}
+      </div>
+    </Card>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Строка категории                                                   */
+/* ------------------------------------------------------------------ */
+
+function CategoryRow({
+  cat,
+  first,
+  last,
+  onMoveUp,
+  onMoveDown,
+  applyLocal,
+  reload,
+}: {
+  cat: CategoryDto;
+  first: boolean;
+  last: boolean;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
+  applyLocal: (id: string, patch: Partial<CategoryDto>) => void;
+  reload: () => Promise<void>;
+}) {
+  const { toast } = useToast();
+  const txCount = cat.transactionCount ?? 0;
+
+  /* ---- Цвет (debounce PATCH) ---- */
+  const colorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    return () => {
+      if (colorTimer.current) clearTimeout(colorTimer.current);
+    };
+  }, []);
+
+  function handleColorChange(value: string) {
+    applyLocal(cat.id, { color: value });
+    if (colorTimer.current) clearTimeout(colorTimer.current);
+    colorTimer.current = setTimeout(async () => {
+      try {
+        await apiPatch(`/api/categories/${cat.id}`, { color: value });
+        toast("Цвет обновлён");
+      } catch (e) {
+        toast(errorMessage(e), "error");
+        void reload();
+      }
+    }, 500);
+  }
+
+  /* ---- Переименование ---- */
+  const [editing, setEditing] = useState(false);
+  const [nameDraft, setNameDraft] = useState(cat.name);
+  const cancelRef = useRef(false);
+
+  function startEdit() {
+    setNameDraft(cat.name);
+    cancelRef.current = false;
+    setEditing(true);
+  }
+
+  async function commitName() {
+    setEditing(false);
+    if (cancelRef.current) return;
+    const trimmed = nameDraft.trim();
+    if (!trimmed || trimmed === cat.name) return;
+    try {
+      await apiPatch(`/api/categories/${cat.id}`, { name: trimmed });
+      applyLocal(cat.id, { name: trimmed });
+      toast("Категория переименована");
+    } catch (e) {
+      toast(errorMessage(e), "error");
+    }
+  }
+
+  /* ---- Удаление категории ---- */
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
+  async function deleteCategory() {
+    setDeleting(true);
+    try {
+      await apiDelete(`/api/categories/${cat.id}`);
+      toast("Категория удалена");
+      setConfirmDelete(false);
+      await reload();
+    } catch (e) {
+      toast(errorMessage(e), "error");
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  /* ---- Подкатегории ---- */
+  const [confirmSub, setConfirmSub] = useState<SubcategoryDto | null>(null);
+  const [deletingSub, setDeletingSub] = useState(false);
+  const [addingSub, setAddingSub] = useState(false);
+  const [subName, setSubName] = useState("");
+  const [creatingSub, setCreatingSub] = useState(false);
+
+  async function deleteSub(sub: SubcategoryDto) {
+    setDeletingSub(true);
+    try {
+      await apiDelete(`/api/subcategories/${sub.id}`);
+      toast("Подкатегория удалена");
+      setConfirmSub(null);
+      await reload();
+    } catch (e) {
+      toast(errorMessage(e), "error");
+    } finally {
+      setDeletingSub(false);
+    }
+  }
+
+  function requestDeleteSub(sub: SubcategoryDto) {
+    if ((sub.transactionCount ?? 0) > 0) {
+      setConfirmSub(sub);
+    } else {
+      void deleteSub(sub);
+    }
+  }
+
+  async function createSub() {
+    const name = subName.trim();
+    if (!name) return;
+    setCreatingSub(true);
+    try {
+      await apiPost("/api/subcategories", { name, categoryId: cat.id });
+      toast("Подкатегория добавлена");
+      setSubName("");
+      setAddingSub(false);
+      await reload();
+    } catch (e) {
+      toast(errorMessage(e), "error");
+    } finally {
+      setCreatingSub(false);
+    }
+  }
+
+  const subs = [...cat.subcategories].sort(
+    (a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name, "ru"),
+  );
+
+  return (
+    <div className="py-2.5 first:pt-0 last:pb-0">
+      <div className="flex items-center gap-2.5">
+        {/* Цветной кружок с невидимым color-input поверх */}
+        <span className="relative inline-flex h-5 w-5 shrink-0" title="Изменить цвет">
+          <span
+            aria-hidden
+            className="h-5 w-5 rounded-full border border-edge-strong"
+            style={{ background: cat.color }}
+          />
+          <input
+            type="color"
+            value={cat.color}
+            onChange={(e) => handleColorChange(e.target.value)}
+            aria-label={`Цвет категории «${cat.name}»`}
+            className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+          />
+        </span>
+
+        {editing ? (
+          <Input
+            value={nameDraft}
+            onChange={(e) => setNameDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") e.currentTarget.blur();
+              if (e.key === "Escape") {
+                cancelRef.current = true;
+                e.currentTarget.blur();
+              }
+            }}
+            onBlur={() => void commitName()}
+            autoFocus
+            className="!h-7 flex-1 text-[13.5px]"
+          />
+        ) : (
+          <>
+            <span className="min-w-0 truncate text-[13.5px] font-medium text-ink">
+              {cat.name}
+            </span>
+            <IconButton onClick={startEdit} aria-label="Переименовать" title="Переименовать">
+              <Pencil size={13} />
+            </IconButton>
+            <span className="shrink-0 text-[12px] text-ink-3">{pluralOps(txCount)}</span>
+          </>
+        )}
+
+        <div className="ml-auto flex shrink-0 items-center gap-0.5">
+          <IconButton
+            onClick={onMoveUp}
+            disabled={first}
+            className="disabled:pointer-events-none disabled:opacity-30"
+            aria-label="Выше"
+            title="Выше"
+          >
+            <ArrowUp size={14} />
+          </IconButton>
+          <IconButton
+            onClick={onMoveDown}
+            disabled={last}
+            className="disabled:pointer-events-none disabled:opacity-30"
+            aria-label="Ниже"
+            title="Ниже"
+          >
+            <ArrowDown size={14} />
+          </IconButton>
+          <IconButton
+            danger
+            disabled={txCount > 0}
+            onClick={() => setConfirmDelete(true)}
+            className="disabled:pointer-events-none disabled:opacity-30"
+            aria-label="Удалить категорию"
+            title={txCount > 0 ? "Сначала перенесите операции" : "Удалить категорию"}
+          >
+            <Trash2 size={14} />
+          </IconButton>
         </div>
       </div>
+
+      {/* Чипы подкатегорий */}
+      <div className="mt-1.5 flex flex-wrap items-center gap-1.5 pl-[30px]">
+        {subs.map((sub) => (
+          <span
+            key={sub.id}
+            className="inline-flex items-center gap-1 rounded-full border border-edge bg-surface-2 py-0.5 pl-2.5 pr-1 text-[12px] text-ink-2"
+          >
+            {sub.name}
+            <button
+              onClick={() => requestDeleteSub(sub)}
+              aria-label={`Удалить подкатегорию «${sub.name}»`}
+              className="flex h-4 w-4 items-center justify-center rounded-full text-ink-3 transition-colors hover:bg-danger/15 hover:text-danger"
+            >
+              <X size={11} />
+            </button>
+          </span>
+        ))}
+
+        {addingSub ? (
+          <Input
+            value={subName}
+            onChange={(e) => setSubName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void createSub();
+              if (e.key === "Escape") {
+                setAddingSub(false);
+                setSubName("");
+              }
+            }}
+            onBlur={() => {
+              if (!subName.trim() && !creatingSub) setAddingSub(false);
+            }}
+            placeholder="Название"
+            autoFocus
+            disabled={creatingSub}
+            className="!h-6 w-36 rounded-full px-2.5 text-[12px]"
+          />
+        ) : (
+          <button
+            onClick={() => setAddingSub(true)}
+            className="inline-flex items-center gap-1 rounded-full border border-dashed border-edge px-2.5 py-0.5 text-[12px] text-ink-3 transition-colors hover:border-edge-strong hover:text-ink-2"
+          >
+            <Plus size={11} />
+            добавить
+          </button>
+        )}
+      </div>
+
+      <ConfirmDialog
+        open={confirmDelete}
+        onClose={() => setConfirmDelete(false)}
+        onConfirm={() => void deleteCategory()}
+        title="Удалить категорию?"
+        message={
+          <>
+            Категория «{cat.name}» будет удалена вместе с подкатегориями. Это действие нельзя
+            отменить.
+          </>
+        }
+        loading={deleting}
+      />
+
+      <ConfirmDialog
+        open={confirmSub !== null}
+        onClose={() => setConfirmSub(null)}
+        onConfirm={() => {
+          if (confirmSub) void deleteSub(confirmSub);
+        }}
+        title="Удалить подкатегорию?"
+        message={
+          confirmSub ? (
+            <>
+              У подкатегории «{confirmSub.name}» — {pluralOps(confirmSub.transactionCount ?? 0)}.
+              Операции останутся без подкатегории.
+            </>
+          ) : null
+        }
+        loading={deletingSub}
+      />
     </div>
   );
 }

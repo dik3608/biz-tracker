@@ -1,9 +1,16 @@
 import { NextRequest } from "next/server";
+import { z } from "zod";
 import { prisma } from "@/lib/prisma";
-import { buildFinancialContext } from "@/lib/ai-context";
+import { jsonError, parseBody, requireSession } from "@/lib/api-server";
+import { buildFinancialContext, parseTimezoneOffset, resolveTodayKey } from "@/lib/ai-context";
+import { addDays } from "@/lib/dates";
 
 const MODEL = "gpt-5.4";
 
+/**
+ * Шаблон системного промпта. Даты подставляются В МОМЕНТ ЗАПРОСА
+ * (никаких вычислений дат на уровне модуля) по часовому поясу пользователя.
+ */
 const SYSTEM_PROMPT_TEMPLATE = `Ты — профессиональный финансовый аналитик и помощник приложения BizTracker.
 У тебя есть ПОЛНЫЙ доступ ко всем финансовым данным пользователя и ВОЗМОЖНОСТЬ УПРАВЛЯТЬ ими.
 Основная валюта — USD. Конвертация USD↔EUR.
@@ -72,19 +79,19 @@ delete_subcategory:
 **1. Пополнение Google Ads — $900**
 
 \`\`\`action
-{"action":"create_transaction","type":"EXPENSE","amount":900,"description":"Пополнение Google Ads","categoryName":"Google Ads","subcategoryName":"Пополнение","date":"2026-03-13","currency":"USD"}
+{"action":"create_transaction","type":"EXPENSE","amount":900,"description":"Пополнение Google Ads","categoryName":"Google Ads","subcategoryName":"Пополнение","date":"{TODAY}","currency":"USD"}
 \`\`\`
 
 **2. Комиссия агентства (15% от $900 = $135)**
 
 \`\`\`action
-{"action":"create_transaction","type":"EXPENSE","amount":135,"description":"Комиссия агентства 15% от $900","categoryName":"Google Ads","subcategoryName":"Комиссии","date":"2026-03-13","currency":"USD"}
+{"action":"create_transaction","type":"EXPENSE","amount":135,"description":"Комиссия агентства 15% от $900","categoryName":"Google Ads","subcategoryName":"Комиссии","date":"{TODAY}","currency":"USD"}
 \`\`\`
 
 КРИТИЧЕСКИ ВАЖНО:
-- Сегодня: ${new Date().toISOString().split("T")[0]}
-- Вчера: ${new Date(Date.now() - 86400000).toISOString().split("T")[0]}
-- Позавчера: ${new Date(Date.now() - 172800000).toISOString().split("T")[0]}
+- Сегодня: {TODAY}
+- Вчера: {YESTERDAY}
+- Позавчера: {DAY_BEFORE}
 - categoryName/subcategoryName — ТОЧНЫЕ названия. Система сама найдёт или создаст
 - НЕ НУЖЕН отдельный create_category — система создаст автоматически!
 - Для удаления/редактирования — найди transactionId в контексте
@@ -97,78 +104,132 @@ delete_subcategory:
 Пользователь подтвердит ВСЕ разом одной кнопкой.
 ЗАПРЕЩЕНО описать действие текстом без блока \`\`\`action — пользователь не сможет его подтвердить!`;
 
+const chatBodySchema = z.object({
+  messages: z
+    .array(
+      z.object({
+        role: z.string(),
+        content: z.string().max(32_000),
+      }),
+    )
+    .max(200)
+    .default([]),
+  sessionId: z.string().min(1).optional(),
+  timezoneOffset: z.number().optional(),
+});
+
 export async function POST(req: NextRequest) {
-  const apiKey = req.headers.get("x-openai-key");
+  const denied = await requireSession(req);
+  if (denied) return denied;
+
+  const apiKey = req.headers.get("x-openai-key") || process.env.OPENAI_API_KEY;
   if (!apiKey) {
-    return new Response(
-      JSON.stringify({ error: "Требуется API-ключ OpenAI." }),
-      { status: 401, headers: { "Content-Type": "application/json" } },
-    );
+    return jsonError("Требуется API-ключ OpenAI.", 401);
   }
 
-  const body = await req.json();
-  const { messages = [], sessionId } = body;
+  const { data, error } = await parseBody(req, chatBodySchema);
+  if (error) return error;
 
-  let sid = sessionId;
-  if (!sid) {
+  // В OpenAI уходят только user/assistant — system строит исключительно сервер
+  const history = data.messages
+    .filter((m) => m.role === "user" || m.role === "assistant")
+    .map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
+
+  // Сессия: присланный id обязан существовать; без id — создаём новую
+  let sid = data.sessionId ?? null;
+  let createdSession = false;
+  if (sid) {
+    const exists = await prisma.chatSession.findUnique({ where: { id: sid } });
+    if (!exists) return jsonError("Чат не найден", 404);
+  } else {
     const session = await prisma.chatSession.create({ data: { title: "Новый чат" } });
     sid = session.id;
+    createdSession = true;
   }
+
+  // «Сегодня» — по часовому поясу пользователя, только для системного промпта
+  const offset =
+    parseTimezoneOffset(data.timezoneOffset) ??
+    parseTimezoneOffset(req.headers.get("x-timezone-offset"));
+  const today = resolveTodayKey(offset);
 
   let contextText = "";
   try {
-    contextText = await buildFinancialContext();
+    contextText = await buildFinancialContext(today);
   } catch {
     contextText = "Не удалось загрузить данные.";
   }
 
-  const systemPrompt = SYSTEM_PROMPT_TEMPLATE.replace("{CONTEXT}", contextText);
+  const systemPrompt = SYSTEM_PROMPT_TEMPLATE.replace("{CONTEXT}", contextText)
+    .replaceAll("{TODAY}", today)
+    .replaceAll("{YESTERDAY}", addDays(today, -1))
+    .replaceAll("{DAY_BEFORE}", addDays(today, -2));
 
-  const lastUserMsg = messages[messages.length - 1];
-  if (lastUserMsg?.role === "user") {
-    await prisma.chatMessage.create({
-      data: { role: "user", content: lastUserMsg.content, sessionId: sid },
+  const openaiMessages = [{ role: "system" as const, content: systemPrompt }, ...history];
+
+  let openaiRes: Response;
+  try {
+    openaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: MODEL,
+        messages: openaiMessages,
+        stream: true,
+        temperature: 0.3,
+        max_completion_tokens: 4096,
+      }),
     });
-    await prisma.chatSession.update({ where: { id: sid }, data: { updatedAt: new Date() } });
+  } catch {
+    if (createdSession) {
+      await prisma.chatSession.delete({ where: { id: sid } }).catch(() => {});
+    }
+    return jsonError("Не удалось связаться с OpenAI", 502);
   }
 
-  const openaiMessages = [
-    { role: "system", content: systemPrompt },
-    ...messages.map((m: { role: string; content: string }) => ({ role: m.role, content: m.content })),
-  ];
+  if (!openaiRes.ok || !openaiRes.body) {
+    const err = await openaiRes.text().catch(() => "");
+    if (createdSession) {
+      await prisma.chatSession.delete({ where: { id: sid } }).catch(() => {});
+    }
+    return jsonError(`OpenAI ошибка: ${openaiRes.status}. ${err}`.trim(), openaiRes.status || 502);
+  }
 
-  const openaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: MODEL,
-      messages: openaiMessages,
-      stream: true,
-      temperature: 0.3,
-      max_completion_tokens: 4096,
-    }),
-  });
-
-  if (!openaiRes.ok) {
-    const err = await openaiRes.text();
-    return new Response(
-      JSON.stringify({ error: `OpenAI ошибка: ${openaiRes.status}. ${err}` }),
-      { status: openaiRes.status, headers: { "Content-Type": "application/json" } },
-    );
+  // Сообщение пользователя сохраняем ТОЛЬКО после успешного начала ответа
+  const lastUserMsg = [...history].reverse().find((m) => m.role === "user");
+  if (lastUserMsg) {
+    try {
+      await prisma.chatMessage.create({
+        data: { role: "user", content: lastUserMsg.content, sessionId: sid },
+      });
+      await prisma.chatSession.update({ where: { id: sid }, data: { updatedAt: new Date() } });
+    } catch {
+      // не роняем стрим из-за сбоя записи истории
+    }
   }
 
   const encoder = new TextEncoder();
-  let fullResponse = "";
   const currentSessionId = sid;
-  const isFirstMessage = messages.length === 1;
-  const firstUserText = messages[0]?.content || "";
+  const isFirstMessage = history.length === 1;
+  const firstUserText = history[0]?.role === "user" ? history[0].content : "";
 
   const stream = new ReadableStream({
     async start(controller) {
-      controller.enqueue(encoder.encode(`data: ${JSON.stringify({ sessionId: currentSessionId })}\n\n`));
+      let fullResponse = "";
+      const safeEnqueue = (chunk: string): boolean => {
+        try {
+          controller.enqueue(encoder.encode(chunk));
+          return true;
+        } catch {
+          return false; // клиент отключился
+        }
+      };
+
+      safeEnqueue(`data: ${JSON.stringify({ sessionId: currentSessionId })}\n\n`);
+
       const reader = openaiRes.body!.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
@@ -184,39 +245,54 @@ export async function POST(req: NextRequest) {
           for (const line of lines) {
             const trimmed = line.trim();
             if (!trimmed.startsWith("data: ")) continue;
-            const data = trimmed.slice(6);
-            if (data === "[DONE]") continue;
+            const payload = trimmed.slice(6);
+            if (payload === "[DONE]") continue;
             try {
-              const parsed = JSON.parse(data);
+              const parsed = JSON.parse(payload);
               const delta = parsed.choices?.[0]?.delta?.content;
               if (delta) {
                 fullResponse += delta;
-                controller.enqueue(encoder.encode(`data: ${JSON.stringify({ content: delta })}\n\n`));
+                if (!safeEnqueue(`data: ${JSON.stringify({ content: delta })}\n\n`)) {
+                  throw new Error("client disconnected");
+                }
               }
-            } catch {}
+            } catch (e) {
+              if (e instanceof Error && e.message === "client disconnected") throw e;
+              // битый JSON-чанк — пропускаем
+            }
           }
         }
-
-        controller.enqueue(encoder.encode("data: [DONE]\n\n"));
-        controller.close();
-
+      } catch {
+        reader.cancel().catch(() => {});
+      } finally {
+        // Ответ ассистента сохраняем и при обрыве стрима
         if (fullResponse) {
-          await prisma.chatMessage.create({
-            data: { role: "assistant", content: fullResponse, sessionId: currentSessionId },
-          });
+          try {
+            await prisma.chatMessage.create({
+              data: { role: "assistant", content: fullResponse, sessionId: currentSessionId },
+            });
+          } catch {}
         }
-
         if (isFirstMessage && firstUserText) {
-          const title = firstUserText.length > 50 ? firstUserText.slice(0, 50) + "..." : firstUserText;
-          await prisma.chatSession.update({ where: { id: currentSessionId }, data: { title } });
+          const title =
+            firstUserText.length > 50 ? firstUserText.slice(0, 50) + "..." : firstUserText;
+          await prisma.chatSession
+            .update({ where: { id: currentSessionId }, data: { title } })
+            .catch(() => {});
         }
-      } catch (err) {
-        controller.error(err);
+        safeEnqueue("data: [DONE]\n\n");
+        try {
+          controller.close();
+        } catch {}
       }
     },
   });
 
   return new Response(stream, {
-    headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" },
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    },
   });
 }
