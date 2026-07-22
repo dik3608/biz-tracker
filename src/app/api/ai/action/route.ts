@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireQuickAccess } from "@/lib/api-server";
 import { executeAiAction } from "@/lib/ai-actions";
+import { parseTimezoneOffset, resolveTodayKey } from "@/lib/ai-context";
 
 /**
  * POST /api/ai/action — исполнение одного действия ассистента.
@@ -22,6 +23,9 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const { status, ...payload } = await executeAiAction(body);
+  // «Сегодня» по часовому поясу клиента — на случай действий без явной даты
+  const today = resolveTodayKey(parseTimezoneOffset(req.headers.get("x-timezone-offset")));
+
+  const { status, ...payload } = await executeAiAction(body, { today });
   return NextResponse.json(payload, { status });
 }

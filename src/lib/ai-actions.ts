@@ -11,13 +11,12 @@ import { Prisma, TxType } from "@/generated/prisma/client";
 import {
   amountSchema,
   currencySchema,
-  dateKeySchema,
   makeSlug,
   transactionInputSchema,
   txTypeSchema,
   validateCategoryPair,
 } from "@/lib/api-server";
-import { dateKeyToUtc, utcDateToKey, type DateKey } from "@/lib/dates";
+import { dateKeyToUtc, isDateKey, todayKey, utcDateToKey, type DateKey } from "@/lib/dates";
 import { round2 } from "@/lib/money";
 
 export interface AiActionResult {
@@ -70,6 +69,19 @@ function toNumber(v: unknown): number | undefined {
 
 function toStr(v: unknown): string | undefined {
   return typeof v === "string" && v.trim() ? v.trim() : undefined;
+}
+
+/**
+ * Приводит дату из действия модели к DateKey ("YYYY-MM-DD").
+ * Принимает как чистый DateKey, так и ISO-строку ("2026-07-22T00:00:00Z" →
+ * берём первые 10 символов). Если строки нет или она не парсится (пусто,
+ * плейсхолдер "{TODAY}", мусор) — возвращает null, чтобы вызывающий код
+ * подставил дату по умолчанию. Так создание записи не падает из-за даты.
+ */
+function coerceDateKey(rawDate: unknown): DateKey | null {
+  if (typeof rawDate !== "string") return null;
+  const candidate = rawDate.trim().slice(0, 10);
+  return isDateKey(candidate) ? candidate : null;
 }
 
 /** Достаёт русский текст ошибки из NextResponse, который вернул validateCategoryPair. */
@@ -200,7 +212,10 @@ async function findCategoryAnyType(
 // Обработчики действий
 // ---------------------------------------------------------------------------
 
-async function createTransaction(raw: Record<string, unknown>): Promise<AiActionResult> {
+async function createTransaction(
+  raw: Record<string, unknown>,
+  today: DateKey,
+): Promise<AiActionResult> {
   const type: TxType = raw.type === "INCOME" ? "INCOME" : "EXPENSE";
   const currency = raw.currency === "EUR" ? "EUR" : "USD";
   const rawRate = toNumber(raw.exchangeRate);
@@ -216,7 +231,9 @@ async function createTransaction(raw: Record<string, unknown>): Promise<AiAction
     currency,
     exchangeRate: rawRate !== undefined && rawRate > 0 && rawRate <= 1000 ? rawRate : undefined,
     description: toStr(raw.description) ?? "",
-    date: raw.date,
+    // Модель иногда не присылает дату — тогда операция «сегодня» по календарю
+    // пользователя (fallback), а не ошибка валидации.
+    date: coerceDateKey(raw.date) ?? today,
   });
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
@@ -285,9 +302,9 @@ async function editTransaction(raw: Record<string, unknown>): Promise<AiActionRe
 
   let dateKey: DateKey | undefined;
   if (raw.date !== undefined) {
-    const d = dateKeySchema.safeParse(raw.date);
-    if (!d.success) throw new ActionError(`date: ${d.error.issues[0].message}`, 400);
-    dateKey = d.data;
+    const key = coerceDateKey(raw.date);
+    if (!key) throw new ActionError("date: дата должна быть в формате YYYY-MM-DD", 400);
+    dateKey = key;
     data.date = dateKeyToUtc(dateKey);
   }
 
@@ -534,18 +551,26 @@ async function deleteSubcategory(raw: Record<string, unknown>): Promise<AiAction
 // Точка входа
 // ---------------------------------------------------------------------------
 
-/** Исполняет одно действие ассистента; никогда не бросает исключений. */
-export async function executeAiAction(payload: unknown): Promise<AiActionResult> {
+/**
+ * Исполняет одно действие ассистента; никогда не бросает исключений.
+ * options.today — «сегодня» по календарю пользователя (для операций без даты);
+ * по умолчанию берётся календарь сервера.
+ */
+export async function executeAiAction(
+  payload: unknown,
+  options: { today?: DateKey } = {},
+): Promise<AiActionResult> {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     return { ok: false, status: 400, result: "Некорректное действие" };
   }
   const raw = payload as Record<string, unknown>;
   const action = typeof raw.action === "string" ? raw.action : "";
+  const today = options.today ?? todayKey();
 
   try {
     switch (action) {
       case "create_transaction":
-        return await createTransaction(raw);
+        return await createTransaction(raw, today);
       case "edit_transaction":
         return await editTransaction(raw);
       case "delete_transaction":

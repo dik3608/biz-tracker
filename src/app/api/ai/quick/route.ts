@@ -25,18 +25,23 @@ const SYSTEM_PROMPT_TEMPLATE = `Ты — финансовый помощник B
 {
   "text": "Краткое описание что делаю",
   "actions": [
-    {"action":"create_transaction","type":"EXPENSE","amount":900,...}
+    {"action":"create_transaction","type":"EXPENSE","amount":900,"description":"Оплата сервера","categoryName":"Подписки/Сервисы","date":"{TODAY}","currency":"USD"}
   ]
 }
 
 Если действий нет (просто вопрос): {"text":"ответ","actions":[]}
 
+ПОЛЯ create_transaction:
+- ОБЯЗАТЕЛЬНО: action, type, amount, description, date
+- date — всегда в формате YYYY-MM-DD. Если пользователь не назвал дату — ставь {TODAY}
+- Категорию указывай через categoryName (текст) — система сама найдёт или создаст
+- Опционально: subcategoryName, currency, exchangeRate
+
 РАСЧЁТЫ:
 - "комиссия 15%" от суммы → вычисли и создай отдельную транзакцию
 - Несколько задач → несколько actions
 - Сегодня: {TODAY}
-- Вчера: {YESTERDAY}
-- Используй РЕАЛЬНЫЕ id категорий/подкатегорий из контекста`;
+- Вчера: {YESTERDAY}`;
 
 const quickBodySchema = z.object({
   message: z.string().trim().min(1, "Сообщение не может быть пустым").max(4000),
@@ -134,7 +139,7 @@ export async function POST(req: NextRequest) {
   if (autoConfirm && actions.length > 0) {
     for (const act of actions) {
       try {
-        const r = await executeAiAction(act);
+        const r = await executeAiAction(act, { today });
         executed.push({ action: String(act?.action ?? ""), ok: r.ok, result: r.result });
       } catch (err) {
         executed.push({ action: String(act?.action ?? ""), ok: false, result: String(err) });
